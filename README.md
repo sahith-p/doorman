@@ -39,9 +39,32 @@ Or build it yourself with `make install`. You'll need Xcode.
    claude mcp add --scope user doorman -- "/Applications/Doorman.app/Contents/MacOS/doorman-mcp"
    ```
 
-   For other agents, add an MCP server with that path as its command.
+   This also covers the Code tab in the Claude desktop app. For the app's Chat tab, see [Claude desktop app](#claude-desktop-app). For other agents, add an MCP server with that path as its command.
 
 Start a new agent session, open a page that needs a login, and ask the agent to sign in.
+
+### Claude desktop app
+
+The desktop app's Chat tab has its own list of MCP servers, and doesn't see ones added with `claude mcp add`.
+
+1. **Quit Claude with ⌘Q.** Closing the window isn't enough. Claude saves its config when it quits, which overwrites anything you changed while it was open.
+2. Open the config file. If it doesn't exist yet, create it with `{ "mcpServers": {} }` in it.
+
+   ```bash
+   open -a TextEdit "$HOME/Library/Application Support/Claude/claude_desktop_config.json"
+   ```
+
+3. Add Doorman inside `mcpServers`, with a comma after the entry before it, and save.
+
+   ```json
+   "doorman": {
+     "command": "/Applications/Doorman.app/Contents/MacOS/doorman-mcp"
+   }
+   ```
+
+   If you built it yourself with `make install`, use `/Users/YOU/Applications/Doorman.app/Contents/MacOS/doorman-mcp` instead.
+
+4. Open Claude again. Doorman should appear with your other local servers.
 
 ## How a sign-in works
 
@@ -106,6 +129,7 @@ MCP tools: `sign_in`, `check_sign_in`, `sign_in_options` and `doorman_status`. N
 |---|---|
 | macOS asks for your Keychain password | Choose **Always Allow**. It asks again after an update, because macOS treats each build as a new app |
 | Doorman says it has no Accessibility permission, but the switch is on | macOS is remembering an older build. In System Settings, remove Doorman from the Accessibility list with **−**, then add it again |
+| Doorman doesn't appear in the Claude desktop app | Claude overwrote your edit when it quit. [Quit it first](#claude-desktop-app), then edit the config |
 | The extension won't connect | Open Doorman first, then click reload on `chrome://extensions` |
 | `no_window` in Claude's browser | The pane has to be showing |
 | `mail_not_found` | Check who the email really comes from, and set that as the role's sender |
