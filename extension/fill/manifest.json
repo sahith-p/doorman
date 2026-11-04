@@ -1,0 +1,19 @@
+{
+  "manifest_version": 3,
+  "name": "Doorman",
+  "version": "0.1.0",
+  "description": "Fills sign-in pages for Doorman after you approve them in the Doorman app.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAyYAPvlKgq3irpRRtCUFI4gp8FTwVQYXHWOgXpwqH1hg+nOsv966l9Dsb6DIHhu71n5It51VIfG4DzSq3ARgoNaAeriQhKXJYhmWIQTG+btbHvMLOtF7MuYVCL4gSqXlLe9OChAVB00ekc2Jl7Pi85KZymFaQEj2F4Q5iDDFk15CW1H2kk/OeDhgVqkyPMAsoyVC4VOS6VfkvYFMKi4OeWUbCjanZ0OUOQIfqVmf/Ucl5tZ05aaWV6fha/dR/L313Q2heDFbAJ5O1l1HPMfaFSXOTmZXZ7qSFHlln560HCiXqaBMBLxvp9yq0gj3QOOEIIUyuJqFubQAxSGqvE3izLwIDAQAB",
+  "permissions": [
+    "nativeMessaging",
+    "scripting",
+    "tabs",
+    "alarms"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  }
+}

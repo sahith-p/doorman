@@ -1,0 +1,30 @@
+{
+  "apps": [
+    {
+      "id": "6F1B7A9E-2C44-4E11-9A10-0A1B2C3D4E01",
+      "name": "Acme Production",
+      "host": "app.acme.example",
+      "isTest": false,
+      "roles": [
+        { "id": "6F1B7A9E-2C44-4E11-9A10-0A1B2C3D4E11", "name": "Admin", "path": "/admin", "signIn": "emailCode", "codeIfAsked": "none", "mailSender": "no-reply@acme.example, login@mail.acme.example", "linkHosts": [], "warning": "Reaches every customer" },
+        { "id": "6F1B7A9E-2C44-4E11-9A10-0A1B2C3D4E12", "name": "User", "path": "/", "signIn": "password", "codeIfAsked": "askMe", "mailSender": "", "linkHosts": [], "warning": "" }
+      ],
+      "accounts": [
+        { "id": "6F1B7A9E-2C44-4E11-9A10-0A1B2C3D4E21", "name": "Admin", "roleID": "6F1B7A9E-2C44-4E11-9A10-0A1B2C3D4E11", "login": "you@example.com", "credential": { "none": {} }, "approval": "everyTime" },
+        { "id": "6F1B7A9E-2C44-4E11-9A10-0A1B2C3D4E22", "name": "User", "roleID": "6F1B7A9E-2C44-4E11-9A10-0A1B2C3D4E12", "login": "you@example.com", "credential": { "applePasswords": { "site": "app.acme.example" } }, "approval": "everyTime" }
+      ]
+    },
+    {
+      "id": "6F1B7A9E-2C44-4E11-9A10-0A1B2C3D4E02",
+      "name": "Acme Staging",
+      "host": "staging.acme.example",
+      "isTest": true,
+      "roles": [
+        { "id": "6F1B7A9E-2C44-4E11-9A10-0A1B2C3D4E13", "name": "User", "path": "/", "signIn": "password", "codeIfAsked": "askMe", "mailSender": "", "linkHosts": [], "warning": "" }
+      ],
+      "accounts": [
+        { "id": "6F1B7A9E-2C44-4E11-9A10-0A1B2C3D4E23", "name": "Test user", "roleID": "6F1B7A9E-2C44-4E11-9A10-0A1B2C3D4E13", "login": "test@example.com", "credential": { "stored": {} }, "approval": "noPopup" }
+      ]
+    }
+  ]
+}
