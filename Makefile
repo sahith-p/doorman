@@ -1,4 +1,4 @@
-.PHONY: build test e2e snapshots app install package demo probe
+.PHONY: build test e2e snapshots brand app install package demo probe
 
 build:
 	swift build
@@ -16,6 +16,10 @@ probe: build
 
 snapshots: build
 	.build/debug/doorman-snapshots
+
+# The icon, the logos and the extension's images, all drawn from scripts/make-brand.py.
+brand:
+	python3 -I scripts/make-brand.py
 
 app:
 	scripts/build-app.sh
