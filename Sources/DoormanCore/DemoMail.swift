@@ -10,12 +10,12 @@ public struct DemoMailSource: MailSource {
 
     public func messages(from sender: String, since: Date) async throws -> [RawMail] {
         guard let url = URL(string: "http://localhost:\(port)/__mail") else { return [] }
-        let (data, _) = try await URLSession.shared.data(from: url)
+        let (data, _) = try await DoormanNetwork.session.data(from: url)
         guard let list = (try? JSONSerialization.jsonObject(with: data)) as? [[String: Any]] else { return [] }
         return list.compactMap { item in
             guard let raw = item["raw"] as? String, let at = item["at"] as? Double else { return nil }
             let received = Date(timeIntervalSince1970: at / 1000)
-            return received >= since ? RawMail(received: received, rfc822: Data(raw.utf8)) : nil
+            return received >= since ? RawMail(received: received, rfc822: Data(raw.utf8), authServer: "demo") : nil
         }.reversed()
     }
 }

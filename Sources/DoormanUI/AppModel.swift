@@ -82,6 +82,7 @@ public final class AppModel: ObservableObject {
             NSApp.terminate(nil)
             return
         }
+        if let id = Bundle.main.bundleIdentifier { DoormanNetwork.removeOldCaches(bundleID: id) }
         let directory = DoormanConstants.supportDirectory
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         let store = SettingsStore(directory: directory, keys: KeychainSigningKey(), generations: KeychainGenerationStore())
@@ -151,16 +152,18 @@ public final class AppModel: ObservableObject {
     private func announce(_ entry: ActivityEntry) {
         let place = entry.app.isEmpty ? entry.host : entry.app
         switch entry.status {
-        case .signedIn:
-            if entry.reason == Reason.alreadySignedIn {
-                approvals.show(.init(text: "Already signed in to \(place)", detail: entry.agent, kind: .success), hideAfter: 3)
-            } else {
-                approvals.show(.init(text: "Signed in to \(place)", detail: "for \(entry.agent)", kind: .success), hideAfter: 5)
-            }
+        case .filled:
+            approvals.show(.init(text: "Filled in \(place)", detail: "for \(entry.agent)", kind: .success), hideAfter: 5)
+        case .nothingToFill:
+            approvals.show(.init(text: "Nothing to fill on \(place)", detail: entry.agent, kind: .success), hideAfter: 3)
         case .denied:
             approvals.show(.init(text: "Denied \(place)", detail: "", kind: .problem), hideAfter: 3)
         case .pending:
             break
+        case .needsYou where entry.reason == Reason.appleNotPaired:
+            approvals.show(.init(text: "Apple Passwords needs pairing", detail: "In Doorman, open Apple Passwords and type the code macOS shows", kind: .problem), hideAfter: 10)
+        case .needsYou where entry.reason == Reason.noApp:
+            approvals.show(.init(text: "Couldn't sign in to \(place)", detail: "It isn't added, and Apple Passwords has no login for it", kind: .problem), hideAfter: 8)
         default:
             approvals.show(.init(text: "Couldn't sign in to \(place)", detail: entry.reason.replacingOccurrences(of: "_", with: " "), kind: .problem), hideAfter: 8)
         }
@@ -176,6 +179,13 @@ public final class AppModel: ObservableObject {
         if ticks % 15 == 0 { sessions?.sweep() }
         activity = activityLog.recent()
         if let hub { browserCount = hub.browserCount }
+        // A sign-in can find out that the pairing has gone, and this page should say so too.
+        if let apple = appleConnection {
+            Task { [weak self] in
+                let state = await apple.client.state
+                if self?.appleState != state { self?.appleState = state }
+            }
+        }
         // A change on disk while running counts just like one at launch.
         if let store, !isDirty, case .changedOutside = (try? store.load()) ?? .empty, !changedOutside {
             load(store)
@@ -296,7 +306,7 @@ public final class AppModel: ObservableObject {
     public func addDemoApp() {
         let sender = "codes@doorman.test"
         let scenarios: [(String, SignInMethod, CodeSource)] = [
-            ("Password", .password, .none), ("Totp", .password, .askMe), ("Twostep", .password, .none), ("Emailcode", .emailCode, .none),
+            ("Password", .password, .none), ("Totp", .password, .askMe), ("Twostep", .password, .none), ("Picker", .password, .none), ("Emailcode", .emailCode, .none),
             ("Split", .emailCode, .none), ("Emaillink", .emailLink, .none), ("Controlled", .password, .none), ("Captcha", .password, .none), ("Redirect", .password, .none),
         ]
         var roles: [Role] = []
@@ -318,7 +328,7 @@ public final class AppModel: ObservableObject {
     public func checkDemoSite() {
         guard let url = URL(string: "http://localhost:8765/") else { return }
         Task {
-            let running = (try? await URLSession.shared.data(from: url))?.1 != nil
+            let running = (try? await DoormanNetwork.session.data(from: url))?.1 != nil
             demoSiteRunning = running
         }
     }
@@ -441,7 +451,7 @@ public final class AppModel: ObservableObject {
         case .notConnected:
             currentMail.value = NoMailSource()
         case .imap:
-            currentMail.value = IMAPMailSource(config: .init(host: mail.imapHost, port: mail.imapPort, username: mail.address)) {
+            currentMail.value = IMAPMailSource(config: .init(host: mail.imapHost, port: mail.imapPort, username: mail.address, authServer: mail.imapTrustedAuthServer)) {
                 Keychain.get(account: "imap-password").map { Secret(String(decoding: $0, as: UTF8.self)) }
             }
         case .gmail:

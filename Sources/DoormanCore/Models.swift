@@ -181,14 +181,39 @@ public struct MailSettings: Codable, Equatable, Sendable {
     public var address: String
     public var imapHost: String
     public var imapPort: Int
+    /// What your IMAP server calls itself in Authentication-Results. Filled in for Gmail.
+    public var imapAuthServer: String
     public var gmailClientID: String
 
-    public init(provider: MailProvider = .notConnected, address: String = "", imapHost: String = "imap.gmail.com", imapPort: Int = 993, gmailClientID: String = "") {
+    public init(provider: MailProvider = .notConnected, address: String = "", imapHost: String = "imap.gmail.com", imapPort: Int = 993, imapAuthServer: String = "", gmailClientID: String = "") {
+        self.imapAuthServer = imapAuthServer
         self.provider = provider
         self.address = address
         self.imapHost = imapHost
         self.imapPort = imapPort
         self.gmailClientID = gmailClientID
+    }
+
+    private enum CodingKeys: String, CodingKey { case provider, address, imapHost, imapPort, imapAuthServer, gmailClientID }
+
+    /// Tolerant, so a settings file from before `imapAuthServer` still loads.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        provider = try c.decode(MailProvider.self, forKey: .provider)
+        address = try c.decode(String.self, forKey: .address)
+        imapHost = try c.decode(String.self, forKey: .imapHost)
+        imapPort = try c.decode(Int.self, forKey: .imapPort)
+        imapAuthServer = try c.decodeIfPresent(String.self, forKey: .imapAuthServer) ?? ""
+        gmailClientID = try c.decode(String.self, forKey: .gmailClientID)
+    }
+
+    /// Who to trust in Authentication-Results for this IMAP server. Nil means nobody yet, so no mail from
+    /// it can be verified.
+    public var imapTrustedAuthServer: String? {
+        let typed = imapAuthServer.trimmingCharacters(in: .whitespaces)
+        if !typed.isEmpty { return typed }
+        let host = imapHost.trimmingCharacters(in: .whitespaces).lowercased()
+        return host == "imap.gmail.com" || host == "imap.googlemail.com" ? GmailMailSource.authServer : nil
     }
 }
 

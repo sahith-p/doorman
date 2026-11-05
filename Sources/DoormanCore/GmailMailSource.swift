@@ -22,13 +22,15 @@ public protocol GmailTokenStore: Sendable {
 /// Google, so only matching messages are ever fetched.
 public struct GmailMailSource: MailSource {
     public static let scope = "https://www.googleapis.com/auth/gmail.readonly"
+    /// What Gmail's own header calls it. A message's own copy of the header can't carry this first.
+    public static let authServer = "mx.google.com"
     private let clientID: String
     private let clientSecret: @Sendable () -> String
     private let store: GmailTokenStore
     private let session: URLSession
     private let hasStoredTokens: @Sendable () -> Bool
 
-    public init(clientID: String, clientSecret: @escaping @Sendable () -> String, store: GmailTokenStore, session: URLSession = .shared,
+    public init(clientID: String, clientSecret: @escaping @Sendable () -> String, store: GmailTokenStore, session: URLSession = DoormanNetwork.session,
                 hasStoredTokens: @escaping @Sendable () -> Bool = { false }) {
         self.hasStoredTokens = hasStoredTokens
         self.clientID = clientID
@@ -86,7 +88,7 @@ public struct GmailMailSource: MailSource {
             guard let raw = full["raw"] as? String, let data = Self.base64URL(raw) else { continue }
             let millis = Double(full["internalDate"] as? String ?? "") ?? 0
             let received = Date(timeIntervalSince1970: millis / 1000)
-            if received >= since { out.append(RawMail(received: received, rfc822: data)) }
+            if received >= since { out.append(RawMail(received: received, rfc822: data, authServer: Self.authServer)) }
         }
         return out
     }
@@ -179,7 +181,7 @@ public enum GmailAuthorizer {
             "client_id": clientID, "client_secret": clientSecret, "code": bits[0], "code_verifier": verifier,
             "grant_type": "authorization_code", "redirect_uri": "http://127.0.0.1:\(bits[1])/",
         ])
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await DoormanNetwork.session.data(for: request)
         guard (response as? HTTPURLResponse)?.statusCode == 200, let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
               let access = object["access_token"] as? String, let refresh = object["refresh_token"] as? String else {
             throw Failure.failed("Google didn't hand over a token. Check the client ID and secret.")

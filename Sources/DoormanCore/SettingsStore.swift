@@ -51,8 +51,10 @@ public final class SettingsStore: @unchecked Sendable {
 
     public func load() throws -> SettingsLoad {
         guard FileManager.default.fileExists(atPath: fileURL.path) else {
-            // A signature with no file means the settings were deleted from outside.
-            return FileManager.default.fileExists(atPath: sigURL.path) ? .changedOutside(nil) : .empty
+            // A signature with no file, or a save counter with no file, means the settings were deleted
+            // from outside. Starting empty would quietly undo a pause and a list of sites to leave alone.
+            let wasSaved = FileManager.default.fileExists(atPath: sigURL.path) || generations.current() > 0
+            return wasSaved ? .changedOutside(nil) : .empty
         }
         let data = try Data(contentsOf: fileURL)
         let decoded = try? JSONDecoder().decode(DoormanSettings.self, from: data)

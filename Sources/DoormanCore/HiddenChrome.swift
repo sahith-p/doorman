@@ -41,6 +41,11 @@ public final class HiddenChrome: @unchecked Sendable {
         return candidates.first { FileManager.default.isExecutableFile(atPath: $0) }
     }
 
+    /// What macOS calls the hidden browser, for instance on Apple's Touch ID sheet.
+    public static var browserName: String? {
+        findBrowser().map { URL(fileURLWithPath: $0).lastPathComponent }
+    }
+
     public init(binary: String, profile: URL, extensions: [String], nativeHosts: [NativeHost], environment: [String: String] = [:]) {
         self.binary = binary
         self.profile = profile

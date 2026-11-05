@@ -20,19 +20,19 @@ final class FloatingPanel: NSPanel {
     override var canBecomeMain: Bool { false }
 
     init(view: NSView, interactive: Bool) {
-        super.init(contentRect: NSRect(x: 0, y: 0, width: 440, height: 200),
-                   styleMask: [.nonactivatingPanel, .titled, .fullSizeContentView], backing: .buffered, defer: false)
-        titlebarAppearsTransparent = true
-        titleVisibility = .hidden
+        // Borderless, because a titled window keeps an empty strip at the top for its title bar. The rounded
+        // card itself is drawn by `floatingCard`.
+        super.init(contentRect: NSRect(x: 0, y: 0, width: 340, height: 120),
+                   styleMask: [.nonactivatingPanel, .borderless], backing: .buffered, defer: false)
+        isOpaque = false
+        backgroundColor = .clear
+        hasShadow = true
         isMovableByWindowBackground = true
         level = .floating
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient]
         hidesOnDeactivate = false
         isFloatingPanel = true
         ignoresMouseEvents = !interactive
-        standardWindowButton(.closeButton)?.isHidden = true
-        standardWindowButton(.miniaturizeButton)?.isHidden = true
-        standardWindowButton(.zoomButton)?.isHidden = true
         contentView = view
     }
 
@@ -48,6 +48,15 @@ final class FloatingPanel: NSPanel {
         let x = topRight ? area.maxX - frame.width - 16 : area.midX - frame.width / 2
         let y = area.maxY - frame.height - (topRight ? 12 : 56)
         setFrameOrigin(NSPoint(x: x, y: y))
+        invalidateShadow()
+    }
+}
+
+extension View {
+    /// The look of every floating popup: compact, rounded, and readable over anything.
+    func floatingCard() -> some View {
+        let shape = RoundedRectangle(cornerRadius: 12, style: .continuous)
+        return background(.regularMaterial, in: shape).overlay(shape.strokeBorder(Color.primary.opacity(0.12), lineWidth: 0.5))
     }
 }
 
@@ -155,6 +164,12 @@ public final class ApprovalCenter: ObservableObject {
 
     public func approve(accountID: UUID) {
         guard let request = current?.request else { return }
+        // Apple's Touch ID comes straight after this, so one here as well would only get in the way. The
+        // engine asks for Doorman's own if Apple's doesn't appear.
+        if request.accounts.first(where: { $0.id == accountID })?.touchIDFollows == true {
+            finishCurrent(.approved(accountID: accountID))
+            return
+        }
         // Written from Doorman's own settings only. Nothing the agent wrote goes into the system sheet.
         let reason = request.role.isEmpty ? "sign in to \(request.app)" : "sign in to \(request.app) as \(request.role)"
         let id = request.id
@@ -243,6 +258,7 @@ public struct ApprovalView: View {
         self.request = request
         self.onApprove = onApprove
         self.onDeny = onDeny
+        _selection = State(initialValue: request.suggestedAccountID)
     }
 
     private var chosen: UUID? { selection ?? (request.accounts.count == 1 ? request.accounts.first?.id : nil) }
@@ -251,28 +267,36 @@ public struct ApprovalView: View {
         let parts = [request.role, chosenAccount?.login ?? ""].filter { !$0.isEmpty }
         return parts.isEmpty ? "Choose a login" : "as " + parts.joined(separator: ", ")
     }
+    private var touchIDFollows: Bool { chosenAccount?.touchIDFollows ?? false }
+    /// Apple's sheet names the hidden browser and can't be renamed, so say so before it appears.
+    private var appleSheetNote: String? {
+        guard chosenAccount?.passwordSite != nil else { return nil }
+        let browser = HiddenChrome.browserName ?? "your browser"
+        let first = touchIDFollows ? "Touch ID is next, and it will say \(browser)." : "Apple Passwords may ask for Touch ID too, and it will say \(browser)."
+        return "\(first) That's the hidden copy Doorman uses to reach Apple Passwords."
+    }
     private var siteMismatch: String? {
         guard let site = chosenAccount?.passwordSite, !Approval.siteMatches(site: site, host: request.host) else { return nil }
         return site
     }
 
     public var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack(alignment: .top, spacing: 14) {
-                Image(systemName: "touchid")
-                    .font(.system(size: 30))
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: touchIDFollows ? "key.fill" : "touchid")
+                    .font(.system(size: 17))
                     .foregroundStyle(Color.accentColor)
-                    .frame(width: 52, height: 52)
-                    .background(Color.accentColor.opacity(0.12), in: RoundedRectangle(cornerRadius: 12))
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("Sign in to \(request.app)?").font(.title2.weight(.semibold)).fixedSize(horizontal: false, vertical: true)
+                    .frame(width: 32, height: 32)
+                    .background(Color.accentColor.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
+                VStack(alignment: .leading, spacing: 1) {
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Text("Sign in to \(request.app)?").font(.headline).fixedSize(horizontal: false, vertical: true)
+                        if !request.appIsTest { Tag(text: "Real site", color: .orange) }
+                    }
                     Text(subtitle)
-                        .font(.body)
+                        .font(.callout)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
-                    if !request.appIsTest {
-                        Tag(text: "Real site", color: .orange).padding(.top, 2)
-                    }
                 }
                 Spacer(minLength: 0)
             }
@@ -280,33 +304,46 @@ public struct ApprovalView: View {
             if request.accounts.count > 1 {
                 Picker("Account", selection: $selection) {
                     Text("Choose an account").tag(UUID?.none)
-                    ForEach(request.accounts) { Text("\($0.name) (\($0.login))").tag(UUID?.some($0.id)) }
+                    ForEach(request.accounts) { Text($0.name == $0.login ? $0.login : "\($0.name) (\($0.login))").tag(UUID?.some($0.id)) }
                 }
                 .labelsHidden()
+                if let suggested = request.suggestedAccountID, selection == suggested {
+                    Label("\(request.agent) picked this one, not verified. You can change it.", systemImage: "info.circle")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
 
             if !request.roleWarning.isEmpty {
                 Label(request.roleWarning, systemImage: "exclamationmark.triangle.fill")
-                    .font(.callout.weight(.medium))
+                    .font(.caption.weight(.medium))
                     .foregroundStyle(.orange)
             }
             if let site = siteMismatch {
                 Label("Uses the Apple Passwords entry for \(site), which isn't this site", systemImage: "exclamationmark.triangle.fill")
-                    .font(.callout.weight(.medium))
+                    .font(.caption.weight(.medium))
                     .foregroundStyle(.orange)
                     .fixedSize(horizontal: false, vertical: true)
             }
             if request.roleWasAsked {
                 Label("The agent asked for this role by name", systemImage: "info.circle")
-                    .font(.callout)
+                    .font(.caption)
                     .foregroundStyle(.orange)
             }
 
-            VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: 1) {
                 Text("\(request.agent) says, not verified:").font(.caption).foregroundStyle(.secondary)
                 Text(request.agentReason.isEmpty ? "No reason given" : request.agentReason)
-                    .font(.callout)
+                    .font(.caption)
                     .foregroundStyle(request.agentReason.isEmpty ? .secondary : .primary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if let note = appleSheetNote {
+                Label(note, systemImage: "info.circle")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
@@ -341,23 +378,22 @@ public struct ApprovalView: View {
             .font(.caption)
             .foregroundStyle(.secondary)
 
-            HStack(spacing: 10) {
+            HStack(spacing: 8) {
                 Button(action: onDeny) { Text("Deny").frame(maxWidth: .infinity) }
-                    .controlSize(.large)
                     .keyboardShortcut(.cancelAction)
                 Button {
                     if let chosen { onApprove(chosen) }
                 } label: {
-                    Label("Approve", systemImage: "touchid").frame(maxWidth: .infinity)
+                    Label("Approve", systemImage: touchIDFollows ? "checkmark" : "touchid").frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.borderedProminent)
-                .controlSize(.large)
                 .keyboardShortcut(.defaultAction)
                 .disabled(chosen == nil)
             }
         }
-        .padding(20)
-        .frame(width: 440)
+        .padding(14)
+        .frame(width: 340)
+        .floatingCard()
     }
 }
 
@@ -367,14 +403,14 @@ struct Tag: View {
     var body: some View {
         Text(text)
             .font(.caption.weight(.medium))
-            .padding(.horizontal, 7)
-            .padding(.vertical, 2)
+            .padding(.horizontal, 5)
+            .padding(.vertical, 1)
             .foregroundStyle(color)
             .background(color.opacity(0.14), in: RoundedRectangle(cornerRadius: 5))
     }
 }
 
-/// Big and ready to type in: the box has focus as soon as it appears, and Return sends it.
+/// Ready to type in: the box has focus as soon as it appears, and Return sends it.
 public struct CodePromptView: View {
     let app: String
     let account: String
@@ -391,35 +427,34 @@ public struct CodePromptView: View {
     }
 
     public var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text("Enter the code").font(.title2.weight(.semibold))
+        VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Enter the code").font(.headline)
                 Text("for \(app). Doorman enters it, and the agent never sees it.")
-                    .font(.body)
+                    .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
             TextField("", text: $code, prompt: Text("123456"))
                 .textFieldStyle(.plain)
-                .font(.system(size: 30, weight: .semibold, design: .monospaced))
+                .font(.system(size: 20, weight: .semibold, design: .monospaced))
                 .multilineTextAlignment(.center)
-                .padding(.vertical, 12)
-                .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 10))
+                .padding(.vertical, 6)
+                .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 8))
                 .focused($focused)
                 .onSubmit { if !code.isEmpty { onSubmit(code) } }
-            HStack(spacing: 10) {
+            HStack(spacing: 8) {
                 Button(action: onCancel) { Text("Cancel").frame(maxWidth: .infinity) }
-                    .controlSize(.large)
                     .keyboardShortcut(.cancelAction)
                 Button { onSubmit(code) } label: { Text("Enter code").frame(maxWidth: .infinity) }
                     .buttonStyle(.borderedProminent)
-                    .controlSize(.large)
                     .keyboardShortcut(.defaultAction)
                     .disabled(code.isEmpty)
             }
         }
-        .padding(20)
-        .frame(width: 400)
+        .padding(14)
+        .frame(width: 300)
+        .floatingCard()
         .onAppear { DispatchQueue.main.async { focused = true } }
     }
 }
@@ -436,25 +471,27 @@ public struct StatusView: View {
     public init(status: ApprovalCenter.Status) { self.status = status }
 
     public var body: some View {
-        HStack(alignment: .top, spacing: 10) {
+        HStack(alignment: .top, spacing: 8) {
             Group {
                 switch status.kind {
-                case .working: ProgressView().controlSize(.small)
+                case .working: ProgressView().controlSize(.mini)
                 case .success: Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
                 case .problem: Image(systemName: "exclamationmark.circle.fill").foregroundStyle(.orange)
                 }
             }
-            .font(.title3)
-            .frame(width: 22, height: 22)
-            VStack(alignment: .leading, spacing: 1) {
+            .font(.callout)
+            .frame(width: 16, height: 16)
+            VStack(alignment: .leading, spacing: 0) {
                 Text(status.text).font(.callout.weight(.medium)).fixedSize(horizontal: false, vertical: true)
                 if !status.detail.isEmpty {
                     Text(status.detail).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 }
             }
         }
-        .padding(12)
-        .frame(width: 300, alignment: .leading)
+        .padding(.horizontal, 11)
+        .padding(.vertical, 8)
+        .frame(width: 290, alignment: .leading)
+        .floatingCard()
     }
 }
 
@@ -464,5 +501,8 @@ public struct AppApprover: Approver {
     public func approve(_ request: ApprovalRequest) async -> ApprovalDecision { await center.ask(request) }
     public func askForCode(app: String, account: String) async -> Secret? {
         await center.askCode(app: app, account: account)
+    }
+    public func confirmFingerprint(app: String, role: String) async -> Bool {
+        await TouchID.confirm(reason: role.isEmpty ? "sign in to \(app)" : "sign in to \(app) as \(role)")
     }
 }

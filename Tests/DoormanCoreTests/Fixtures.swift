@@ -28,9 +28,16 @@ struct FakeApprover: Approver {
     var decision: ApprovalDecision?
     var log = Box<[ApprovalRequest]>([])
     var typedCode: String? = nil
+    var fingerprints = Box(0)
+    var fingerprintWorks = true
+    func confirmFingerprint(app: String, role: String) async -> Bool {
+        fingerprints.value += 1
+        return fingerprintWorks
+    }
     func approve(_ request: ApprovalRequest) async -> ApprovalDecision {
         log.value.append(request)
-        return decision ?? .approved(accountID: request.accounts[0].id)
+        // Like the popup: it starts on the login the agent named.
+        return decision ?? .approved(accountID: request.suggestedAccountID ?? request.accounts[0].id)
     }
     func askForCode(app: String, account: String) async -> Secret? { typedCode.map { Secret($0) } }
 }
@@ -49,6 +56,7 @@ struct FakePasswords: PasswordSource {
     var password = "hunter2-demo"
     var code: String? = "424242"
     var error: PasswordSourceError? = nil
+    func savedLogins(site: String) async throws -> SavedLogins { SavedLogins(names: []) }
     func credential(for account: Account, host: String) async throws -> Credential {
         if let error { throw error }
         return Credential(username: account.login, password: Secret(password))
@@ -64,7 +72,7 @@ struct FakeMail: MailSource {
         return mails.value
     }
     func deliver(_ text: String) {
-        mails.value.insert(RawMail(received: Date(), rfc822: Data(text.utf8)), at: 0)
+        mails.value.insert(RawMail(received: Date(), rfc822: Data(text.utf8), authServer: "mx.test"), at: 0)
     }
 }
 
@@ -87,6 +95,9 @@ final class FakeBrowser: BrowserAdapter, @unchecked Sendable {
     var inspectFailures = 0
     var inspectError: BrowserError = .failed("Frame with ID 0 was removed")
     var fillError: BrowserError?
+    /// Fails this many fills, then works: a box that went away while the page changed.
+    var fillFailures = 0
+    var missingField = "no_password_field"
     func inspect(tab: String) async throws -> PageState {
         if inspectFailures > 0 {
             inspectFailures -= 1
@@ -100,6 +111,10 @@ final class FakeBrowser: BrowserAdapter, @unchecked Sendable {
     }
     func fillLogin(tab: String, expectedHost: String, username: String?, password: Secret?, submit: Bool) async throws {
         if let fillError { throw fillError }
+        if fillFailures > 0 {
+            fillFailures -= 1
+            throw BrowserError.failed(missingField)
+        }
         fills.append("login:\(username ?? "-"):\(password == nil ? "nopw" : "pw")")
         if let password { filledPasswords.append(password.reveal()) }
         advance()

@@ -4,9 +4,6 @@ import ApplicationServices
 
 /// Reaching Claude's built-in browser, which a Chrome extension can't. This goes through macOS
 /// Accessibility, the way 1Password's Universal Autofill works in any app.
-///
-/// EXPERIMENTAL. Accessibility permission wasn't granted while this was written, so it has never run
-/// against Claude's browser. The Browsers page has a check that reports what this Mac really exposes.
 public enum AccessibilityProbe {
     public static let claudeBundleID = "com.anthropic.claudefordesktop"
 
@@ -58,7 +55,8 @@ public enum AccessibilityProbe {
     }
 
     static func claudeRoot() -> AXUIElement? {
-        guard let app = NSRunningApplication.runningApplications(withBundleIdentifier: claudeBundleID).first else { return nil }
+        guard let app = NSRunningApplication.runningApplications(withBundleIdentifier: claudeBundleID)
+            .first(where: { PeerCheck.isSignedClaude(pid: $0.processIdentifier) }) else { return nil }
         let root = AXUIElementCreateApplication(app.processIdentifier)
         // An Electron app only builds its accessibility tree when something asks for it.
         AXUIElementSetAttributeValue(root, "AXManualAccessibility" as CFString, kCFBooleanTrue)
@@ -141,7 +139,6 @@ public struct AccessibilityAdapter: BrowserAdapter {
     public init() {}
 
     private static let codeRe = #"(one[- ]?time|otp|2fa|mfa|two[- ]?factor|verification|passcode|security code|\bcode\b|\bdigit\b)"#
-    private static let hintRe = #"(sign[- ]?in|log[- ]?in|verify|two[- ]?(factor|step)|one[- ]?time|verification|authenticat|enter (the|your) code|send (me )?(a )?code|magic link|check your email)"#
     private static let userRe = #"(user|login|email|e-mail|account|identifier)"#
     private static let goRe = #"(?i)(sign[- ]?in|log[- ]?in|continue|next|verify|submit|confirm|send)"#
     private static let notThisRe = #"(?i)(cancel|back|forgot|reset|sign[- ]?up|register|create|delete|remove|google|microsoft|apple|github|sso|passkey|show|hide|magic link)"#
@@ -149,7 +146,8 @@ public struct AccessibilityAdapter: BrowserAdapter {
     private func area(_ tab: String) throws -> AXUIElement {
         guard let root = AccessibilityProbe.claudeRoot(), let i = Int(tab) else { throw BrowserError.disconnected }
         let areas = AX.webAreas(root)
-        guard i < areas.count else { throw BrowserError.disconnected }
+        // A page can drop out of the list for a moment while it navigates. That isn't Claude going away.
+        guard i < areas.count else { throw BrowserError.failed("page_changing") }
         return areas[i]
     }
 
@@ -176,17 +174,7 @@ public struct AccessibilityAdapter: BrowserAdapter {
             if words.contains("recaptcha") || words.contains("hcaptcha") || words.contains("not a robot") { captcha = true }
             return !captcha
         }
-        var text = AX.string(page, "AXTitle")
-        var textBudget = 40_000
-        AX.walk(page, budget: &textBudget) { element, role in
-            if role == "AXWebArea", !CFEqual(element, page) { return false }
-            if role == "AXHeading" || role == "AXButton" {
-                text += " " + AX.string(element, "AXTitle") + " " + AX.string(element, "AXDescription") + " " + AX.string(element, "AXValue")
-            }
-            return true
-        }
-        let hints = text.lowercased().range(of: Self.hintRe, options: .regularExpression) != nil
-        return PageState(url: url.absoluteString, username: username, password: password, code: code, captcha: captcha, loginHints: hints)
+        return PageState(url: url.absoluteString, username: username, password: password, code: code, captcha: captcha)
     }
 
     /// A labelled box, or the plain box just before the only password box.

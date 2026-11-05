@@ -21,6 +21,7 @@ Open one of these in Chrome and ask the agent to sign in. For example: "Sign in 
 | Page | What should happen |
 |---|---|
 | `/password/login` | Popup, Touch ID, signed in |
+| `/picker/login` | Nothing to fill. The agent picks the account, then calls `sign_in` again |
 | `/totp/login` | After the password, Doorman asks you for the code. Type `424242` into Doorman, not to the agent |
 | `/twostep/login` | Login name first, password on the next page |
 | `/emailcode/login` | Doorman reads the code from the demo mailbox |

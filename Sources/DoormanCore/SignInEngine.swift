@@ -11,6 +11,8 @@ public struct EngineTiming: Sendable {
     /// A code can land just before the page finishes submitting, so look slightly behind.
     public var mailLookback: TimeInterval = 20
     public var overall: TimeInterval = 240
+    /// Nobody can answer a Touch ID sheet faster than this, so a quicker reply means it was never shown.
+    public var fastestFingerprint: TimeInterval = 1
     /// Polls a page can stay unreadable while it navigates.
     public var unreadablePolls: Int = 25
     public init() {}
@@ -96,6 +98,7 @@ public final class SignInEngine: Sendable {
         let app: AppProfile, role: Role
         var candidates: [Account]
         var unaddedSite = false
+        var appleAsks: [String: Bool] = [:]
         switch resolved {
         case .invalidAddress:
             return SignInResult(status: .failed, reason: Reason.invalidAddress, message: "That isn't a full http or https address.")
@@ -153,9 +156,9 @@ public final class SignInEngine: Sendable {
         }
         log.via = request.sessionFile ? "Session file" : adapter.name
 
-        // Nothing to do means nothing to approve: don't ask for a tap on a page that's already signed in.
-        if !request.sessionFile, await looksSignedIn(adapter: adapter, tab: tab.id, host: host) {
-            return done(.signedIn, Reason.alreadySignedIn, "This browser is already signed in here.")
+        // Nothing to fill means nothing to approve.
+        if !request.sessionFile, await hasNothingToFill(adapter: adapter, tab: tab.id, host: host) {
+            return done(.nothingToFill, Reason.nothingToFill, Self.nothingToFillMessage)
         }
 
         if unaddedSite {
@@ -165,9 +168,11 @@ public final class SignInEngine: Sendable {
             let site = bareHost(host)
             let names: [String]
             do {
-                names = try await passwords.loginNames(site: site)
+                let saved = try await passwords.savedLogins(site: site)
+                names = saved.names
+                appleAsks[site] = saved.touchIDToFill
             } catch PasswordSourceError.notConnected {
-                return done(.needsYou, Reason.appleNotPaired, "Apple Passwords isn't connected. Connect it in Doorman.")
+                return done(.needsYou, Reason.appleNotPaired, Self.pairAgain)
             } catch {
                 return done(.needsYou, Reason.passwordUnavailable, "Doorman couldn't search Apple Passwords.")
             }
@@ -178,17 +183,30 @@ public final class SignInEngine: Sendable {
         }
 
         var account = candidates[0]
+        // Approve was only a click, because Apple's Touch ID is due next. See `run`.
+        var fingerprintOwed = false
         // A site you haven't added always asks. There's no way to turn that off.
         if unaddedSite || candidates.count > 1 || Approval.asksFirst(account: account) {
+            for candidate in candidates {
+                guard case let .applePasswords(site) = candidate.credential, appleAsks[site] == nil else { continue }
+                appleAsks[site] = (try? await passwords.savedLogins(site: site))?.touchIDToFill ?? false
+            }
+            func touchIDFollows(_ candidate: Account) -> Bool {
+                guard case let .applePasswords(site) = candidate.credential else { return false }
+                return appleAsks[site] ?? false
+            }
+            // The agent can say which login it knows is right. That only sets where the list starts.
+            let named = request.account?.trimmingCharacters(in: .whitespaces) ?? ""
+            let suggestion = candidates.count > 1 ? candidates.first { $0.login.caseInsensitiveCompare(named) == .orderedSame || $0.name.caseInsensitiveCompare(named) == .orderedSame } : nil
             let ask = ApprovalRequest(
                 app: app.name, appIsTest: app.isTest, role: role.name, roleWarning: unaddedSite ? "You haven't added this site" : role.warning,
                 roleWasAsked: !(request.role ?? "").isEmpty, accounts: candidates.map { account in
                     var site: String?
                     if case let .applePasswords(value) = account.credential { site = normalizeHost(value) }
-                    return AccountChoice(id: account.id, name: account.name, login: account.login, passwordSite: site)
+                    return AccountChoice(id: account.id, name: account.name, login: account.login, passwordSite: site, touchIDFollows: touchIDFollows(account))
                 },
                 host: host, via: log.via, windowTitle: Self.oneLine(tab.title, limit: 60), steps: unaddedSite ? "Password from Apple Passwords, plus a code if the site asks" : Self.describeSteps(role),
-                agent: Self.agentName(request.agent), agentReason: Self.oneLine(request.reason, limit: 240))
+                agent: Self.agentName(request.agent), agentReason: Self.oneLine(request.reason, limit: 240), suggestedAccountID: suggestion?.id)
             switch await approver.approve(ask) {
             case .denied:
                 return done(.denied, Reason.userDenied, "You denied this sign-in.")
@@ -199,6 +217,7 @@ public final class SignInEngine: Sendable {
                     return done(.denied, Reason.userDenied, "The prompt didn't pick an account from the list.")
                 }
                 account = picked
+                fingerprintOwed = touchIDFollows(picked)
             }
         }
         log.account = account.name
@@ -208,18 +227,18 @@ public final class SignInEngine: Sendable {
                 let started = try await runner.begin(address: url)
                 adapter = started.adapter
                 tab = TabInfo(id: started.tab, url: request.address, title: "", active: true)
-                let outcome = try await run(adapter: adapter, tab: tab.id, url: url, host: host, role: role, account: account, app: app)
-                guard outcome.status == .signedIn else {
+                let outcome = try await run(adapter: adapter, tab: tab.id, host: host, role: role, account: account, app: app, fingerprintOwed: fingerprintOwed)
+                guard outcome.status == .filled, outcome.reason != Reason.movedOn else {
                     await runner.abort()
                     return done(outcome.status, outcome.reason, outcome.message, account: account)
                 }
                 let saved = try await runner.finish(adapter: adapter, tab: tab.id, host: host, label: "\(app.name)-\(role.name)")
-                var result = done(.signedIn, outcome.reason, "Saved a session file. It expires soon, and Doorman deletes it then.", account: account)
+                var result = done(.filled, outcome.reason, "Saved a session file. It expires soon, and Doorman deletes it then.", account: account)
                 result.sessionFile = saved.path
                 result.sessionFileExpires = saved.expires
                 return result
             }
-            let outcome = try await run(adapter: adapter, tab: tab.id, url: url, host: host, role: role, account: account, app: app)
+            let outcome = try await run(adapter: adapter, tab: tab.id, host: host, role: role, account: account, app: app, fingerprintOwed: fingerprintOwed)
             return done(outcome.status, outcome.reason, outcome.message, account: account)
         } catch BrowserError.failed("page_moved") {
             // The page changed in the instant between looking and filling, and the page side refused.
@@ -230,16 +249,43 @@ public final class SignInEngine: Sendable {
             return done(.needsYou, Reason.insecurePage, "The page isn't using https, so Doorman won't fill it.", account: account)
         } catch {
             if request.sessionFile { await sessionFiles?.abort() }
-            return done(.failed, Reason.browserError, "The browser stopped responding during sign-in.", account: account)
+            NSLog("Doorman: sign-in stopped: %@", String(describing: error))
+            let why = Self.explain(error)
+            return done(.failed, why.reason, why.message, account: account)
         }
     }
 
-    /// Only true if the page stays free of any sign-in step for a little while. Anything else goes through
-    /// the prompt as usual.
-    private func looksSignedIn(adapter: BrowserAdapter, tab: String, host: String) async -> Bool {
+    private static let pairAgain = "Apple Passwords needs pairing. In Doorman, open Apple Passwords and type the code macOS shows."
+
+    /// Fixed wording only: what a browser reports can come from the page, and this goes back to the agent.
+    static func explain(_ error: Error) -> (reason: String, message: String) {
+        switch error as? BrowserError {
+        case .disconnected, .failed("page_changing"), .failed("no address"):
+            return (Reason.pageLost, "Doorman lost sight of the page while it changed. In Claude's browser, the pane has to stay showing.")
+        case let .failed(why) where fieldWentAway(why):
+            return (Reason.fieldGone, "The box Doorman was about to fill disappeared.")
+        case .failed("field refused the value"):
+            return (Reason.pageRefused, "The page wouldn't accept what Doorman typed.")
+        default:
+            return (Reason.browserError, "The browser stopped responding during sign-in.")
+        }
+    }
+
+    /// The page changed between looking and typing, and nothing was submitted.
+    static func fieldWentAway(_ why: String) -> Bool {
+        ["no_username_field", "no_password_field", "no_code_field", "page_changing"].contains(why)
+    }
+
+    // What's on the page is for the agent to judge, because it can read it. Doorman only reports what it did.
+    private static let filledMessage = "Doorman entered what the page asked for and submitted it. Look at the page to see where it landed. If it wants something that isn't a secret, like dismissing an offer or pressing Continue, do that yourself. If it asks for another password or code, call sign_in again."
+    private static let nothingToFillMessage = "There's no login box on this page, so Doorman did nothing. If you're signed in, carry on. If the page wants something that isn't a secret, like picking an account or pressing Continue, do that yourself and call sign_in again when it asks for a password or a code."
+
+    /// Only true if the page stays free of any box for a little while, which allows for a slow page. Whether
+    /// that means you're signed in is for the agent to say.
+    private func hasNothingToFill(adapter: BrowserAdapter, tab: String, host: String) async -> Bool {
         for _ in 0..<timing.settlePolls {
             guard let page = try? await adapter.inspect(tab: tab), let url = URL(string: page.url), hostKey(url) == host else { return false }
-            if page.password || page.captcha || page.frameLogin || page.loginHints || Self.looksLikeLoginPath(url.path) { return false }
+            if page.username || page.password || page.code || page.captcha || page.frameLogin { return false }
             try? await Task.sleep(nanoseconds: UInt64(timing.pagePoll * 1_000_000_000))
         }
         return true
@@ -297,7 +343,7 @@ public final class SignInEngine: Sendable {
     /// Watches the page and acts only on what it sees, so 2FA is handled if a site asks and skipped if
     /// it doesn't. Each kind of step is tried once: a form that comes back means the site said no, and
     /// retrying a password can lock an account.
-    private func run(adapter: BrowserAdapter, tab: String, url: URL, host: String, role: Role, account: Account, app: AppProfile) async throws -> Outcome {
+    private func run(adapter: BrowserAdapter, tab: String, host: String, role: Role, account: Account, app: AppProfile, fingerprintOwed owed: Bool) async throws -> Outcome {
         let deadline = Date().addingTimeInterval(timing.overall)
         var didUsername = false, didPassword = false, didCode = false, didLink = false
         var lastAction = Date.distantPast
@@ -305,9 +351,38 @@ public final class SignInEngine: Sendable {
         var quiet = 0
         var mailSince = Date().addingTimeInterval(-timing.mailLookback)
         let acted = { didUsername || didPassword || didCode || didLink }
+        var fingerprintOwed = owed
+        // Held across a retry, so a page that changes mid-fill doesn't mean another Touch ID or email.
+        var heldCredential: Credential?
+        var heldCode: Secret?
+        var fillMisses = 0
 
         func pause() async { try? await Task.sleep(nanoseconds: UInt64(timing.pagePoll * 1_000_000_000)) }
         func settled() -> Bool { Date().timeIntervalSince(lastAction) > timing.rejectAfter }
+
+        /// Apple's Touch ID only covers reading a password. Anything else that uses a secret first, like
+        /// your mail or a code, still needs a finger on Doorman's own.
+        func fingerprintTaken() async -> Bool {
+            guard fingerprintOwed else { return true }
+            guard await approver.confirmFingerprint(app: app.name, role: role.name) else { return false }
+            fingerprintOwed = false
+            return true
+        }
+        let noFingerprint = Outcome(status: .denied, reason: Reason.userDenied, message: "Touch ID didn't finish, so Doorman stopped.")
+
+        /// False means the box went away while the page changed, so look at the page again.
+        func filled(_ fill: () async throws -> Void) async throws -> Bool {
+            do {
+                try await fill()
+                fillMisses = 0
+                return true
+            } catch let BrowserError.failed(why) where Self.fieldWentAway(why) {
+                fillMisses += 1
+                if fillMisses > timing.unreadablePolls { throw BrowserError.failed(why) }
+                await pause()
+                return false
+            }
+        }
 
         var unreadable = 0
         while Date() < deadline {
@@ -335,9 +410,22 @@ public final class SignInEngine: Sendable {
                     await pause()
                     continue
                 }
+                // Often how a sign-in ends, like login.gusto.com handing you to app.gusto.com. Nothing gets typed
+                // on this host. Unless it's asking for a secret, the agent can look and decide.
+                if acted(), !page.password, !page.code {
+                    quiet += 1
+                    if quiet >= timing.settlePolls {
+                        return Outcome(status: .filled, reason: Reason.movedOn, message: "Doorman entered what the page asked for and submitted it, and the page moved off \(host). Nothing was typed there. Look at the page to see where it landed.")
+                    }
+                    await pause()
+                    continue
+                }
                 // Nothing typed from here on. The page left the host this account belongs to, which is
                 // either single sign-on or something worse, and both are yours to look at.
-                return Outcome(status: .needsYou, reason: Reason.wrongSite, message: "The page moved off \(host), so Doorman stopped.")
+                let message = acted()
+                    ? "Doorman entered what it could, then the page moved off \(host) to another site that's asking for a password or code. Nothing was typed there, so have the person look."
+                    : "The page moved off \(host), so Doorman stopped."
+                return Outcome(status: .needsYou, reason: Reason.wrongSite, message: message)
             }
             if !Self.isSecure(pageURL) {
                 // A password sent over plain http can be read by anyone on the network.
@@ -348,6 +436,7 @@ public final class SignInEngine: Sendable {
             }
 
             if role.signIn == .emailLink, didUsername, !didLink {
+                guard await fingerprintTaken() else { return noFingerprint }
                 progress("Waiting for the sign-in link in your email")
                 switch await waitForLink(role: role, app: app, since: mailSince) {
                 case let .found(link):
@@ -362,10 +451,7 @@ public final class SignInEngine: Sendable {
                 }
             }
 
-            // A code box or a lone email box means nothing by itself. A signed-in page can have a promo
-            // code or a newsletter field, and Doorman must not type a login or a code into those.
-            let looksLikeSignIn = page.loginHints || Self.looksLikeLoginPath(pageURL.path)
-            if page.code, acted() || looksLikeSignIn {
+            if page.code {
                 quiet = 0
                 if didCode {
                     if settled() { return Outcome(status: .failed, reason: Reason.codeRejected, message: "The site didn't accept the code.") }
@@ -374,39 +460,47 @@ public final class SignInEngine: Sendable {
                 }
                 let source: CodeSource = role.signIn == .emailCode ? .email : role.codeIfAsked
                 let code: Secret
-                switch source {
-                case .none:
-                    return Outcome(status: .needsYou, reason: Reason.codeRequested, message: "The site asked for a code and this role is set to hand back.")
-                case .askMe:
-                    guard let typed = await approver.askForCode(app: app.name, account: account.name), !typed.isEmpty else {
-                        return Outcome(status: .needsYou, reason: Reason.codeRequested, message: "No code was entered.")
+                if let heldCode {
+                    code = heldCode
+                } else {
+                    if source == .email || source == .authenticator {
+                        guard await fingerprintTaken() else { return noFingerprint }
                     }
-                    code = typed
-                case .authenticator:
-                    // No code saved for this login: you can read it off your phone and type it into Doorman.
-                    if let value = try? await passwords.authenticatorCode(for: account, url: url) {
-                        code = value
-                    } else if let typed = await approver.askForCode(app: app.name, account: account.name), !typed.isEmpty {
-                        code = typed
-                    } else {
-                        return Outcome(status: .needsYou, reason: Reason.codeRequested, message: "The site wants a code, and none was available.")
-                    }
-                case .email:
-                    progress("Waiting for the code in your email")
-                    switch await waitForCode(role: role, since: mailSince) {
-                    case let .found(value):
-                        code = value
-                    case let .stop(outcome):
-                        // No mailbox connected: you can read the code yourself and type it into Doorman.
-                        guard outcome.reason == Reason.mailUnavailable,
-                              let typed = await approver.askForCode(app: app.name, account: account.name), !typed.isEmpty else {
-                            return outcome
+                    switch source {
+                    case .none:
+                        return Outcome(status: .needsYou, reason: Reason.codeRequested, message: "The site asked for a code and this role is set to hand back.")
+                    case .askMe:
+                        guard let typed = await approver.askForCode(app: app.name, account: account.name), !typed.isEmpty else {
+                            return Outcome(status: .needsYou, reason: Reason.codeRequested, message: "No code was entered.")
                         }
                         code = typed
+                    case .authenticator:
+                        // No code saved for this login: you can read it off your phone and type it into Doorman.
+                        if let value = try? await passwords.authenticatorCode(for: account, url: pageURL) {
+                            code = value
+                        } else if let typed = await approver.askForCode(app: app.name, account: account.name), !typed.isEmpty {
+                            code = typed
+                        } else {
+                            return Outcome(status: .needsYou, reason: Reason.codeRequested, message: "The site wants a code, and none was available.")
+                        }
+                    case .email:
+                        progress("Waiting for the code in your email")
+                        switch await waitForCode(role: role, since: mailSince) {
+                        case let .found(value):
+                            code = value
+                        case let .stop(outcome):
+                            // No mailbox connected: you can read the code yourself and type it into Doorman.
+                            guard outcome.reason == Reason.mailUnavailable,
+                                  let typed = await approver.askForCode(app: app.name, account: account.name), !typed.isEmpty else {
+                                return outcome
+                            }
+                            code = typed
+                        }
                     }
+                    heldCode = code
                 }
                 progress("Entering the code")
-                try await adapter.fillCode(tab: tab, expectedHost: host, code: code, submit: true)
+                guard try await filled({ try await adapter.fillCode(tab: tab, expectedHost: host, code: code, submit: true) }) else { continue }
                 didCode = true
                 lastAction = Date()
                 urlAtAction = page.url
@@ -422,15 +516,28 @@ public final class SignInEngine: Sendable {
                     continue
                 }
                 let credential: Credential
-                do {
-                    credential = try await passwords.credential(for: account, host: host)
-                } catch PasswordSourceError.notConnected {
-                    return Outcome(status: .needsYou, reason: Reason.appleNotPaired, message: "Apple Passwords isn't connected. Connect it in Doorman.")
-                } catch {
-                    return Outcome(status: .needsYou, reason: Reason.passwordUnavailable, message: "Doorman couldn't get the password for this account.")
+                if let heldCredential {
+                    credential = heldCredential
+                } else {
+                    if case .applePasswords = account.credential { progress("Waiting for Apple Passwords") }
+                    let asked = Date()
+                    do {
+                        credential = try await passwords.credential(for: account, host: host)
+                    } catch PasswordSourceError.notConnected {
+                        return Outcome(status: .needsYou, reason: Reason.appleNotPaired, message: Self.pairAgain)
+                    } catch {
+                        return Outcome(status: .needsYou, reason: Reason.passwordUnavailable, message: "Doorman couldn't get the password for this account.")
+                    }
+                    // Apple's Touch ID was due while that ran. If the answer came back too fast for
+                    // anyone to have touched the sensor, it never asked, so the finger is still owed.
+                    if fingerprintOwed, Date().timeIntervalSince(asked) >= timing.fastestFingerprint {
+                        fingerprintOwed = false
+                    }
+                    guard await fingerprintTaken() else { return noFingerprint }
+                    heldCredential = credential
                 }
                 progress("Entering your password")
-                try await adapter.fillLogin(tab: tab, expectedHost: host, username: page.username ? credential.username : nil, password: credential.password, submit: true)
+                guard try await filled({ try await adapter.fillLogin(tab: tab, expectedHost: host, username: page.username ? credential.username : nil, password: credential.password, submit: true) }) else { continue }
                 didPassword = true
                 lastAction = Date()
                 urlAtAction = page.url
@@ -440,7 +547,8 @@ public final class SignInEngine: Sendable {
                 continue
             }
 
-            if page.username, acted() || looksLikeSignIn {
+            // A login name comes first. A box after the password is just something on the page behind it.
+            if page.username, !didPassword, !didCode {
                 quiet = 0
                 if didUsername {
                     if settled() { return Outcome(status: .failed, reason: Reason.loginRejected, message: "The site didn't move past the login name.") }
@@ -448,7 +556,7 @@ public final class SignInEngine: Sendable {
                     continue
                 }
                 progress("Entering your login")
-                try await adapter.fillLogin(tab: tab, expectedHost: host, username: account.login, password: nil, submit: true)
+                guard try await filled({ try await adapter.fillLogin(tab: tab, expectedHost: host, username: account.login, password: nil, submit: true) }) else { continue }
                 didUsername = true
                 lastAction = Date()
                 urlAtAction = page.url
@@ -469,19 +577,11 @@ public final class SignInEngine: Sendable {
             }
             if quiet >= timing.settlePolls {
                 if !acted() {
-                    if looksLikeSignIn {
-                        return Outcome(status: .needsYou, reason: Reason.noForm, message: "This looks like a sign-in page, but Doorman doesn't recognise its form.")
-                    }
-                    return Outcome(status: .signedIn, reason: Reason.alreadySignedIn, message: "This browser is already signed in here.")
+                    return Outcome(status: .nothingToFill, reason: Reason.nothingToFill, message: Self.nothingToFillMessage)
                 }
-                if looksLikeSignIn {
-                    if settled() {
-                        return Outcome(status: .needsYou, reason: Reason.noForm, message: "The page still looks like a sign-in page, but has no form Doorman recognises.")
-                    }
-                } else if page.url != urlAtAction || settled() {
-                    // Don't call it signed in on a pause alone: the address has to have moved on, or
-                    // the page has to have stayed free of any sign-in step for a while.
-                    return Outcome(status: .signedIn, reason: "", message: "Signed in.")
+                // After a moment, unless the address has already moved on: the page may still be working.
+                if page.url != urlAtAction || settled() {
+                    return Outcome(status: .filled, reason: "", message: Self.filledMessage)
                 }
             }
             await pause()
@@ -494,10 +594,6 @@ public final class SignInEngine: Sendable {
         if url.scheme?.lowercased() == "https" { return true }
         let host = url.host?.lowercased() ?? ""
         return host == "localhost" || host == "127.0.0.1" || host == "::1" || host == "[::1]"
-    }
-
-    static func looksLikeLoginPath(_ path: String) -> Bool {
-        path.lowercased().range(of: #"(^|/)(log-?in|sign-?in|auth|verify|2fa|mfa|otp)(/|$)"#, options: .regularExpression) != nil
     }
 
     private enum MailWait<Value> {
@@ -529,7 +625,7 @@ public final class SignInEngine: Sendable {
                         let parsed = MailParser.parse(raw.rfc822)
                         guard senders.contains(where: { MailExtract.fromMatches(parsed, expected: $0) }) else { continue }
                         if let date = parsed.date ?? Optional(raw.received), date < since { continue }
-                        guard MailExtract.verified(parsed) else {
+                        guard MailExtract.writtenByYourServer(parsed, server: raw.authServer), MailExtract.verified(parsed) else {
                             sawUnverified = true
                             continue
                         }

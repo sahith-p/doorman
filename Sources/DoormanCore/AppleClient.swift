@@ -53,6 +53,11 @@ public struct ApplePasswordEntry: Sendable, Equatable {
     public var sites: [String]
 }
 
+public struct AppleLookup: Sendable, Equatable {
+    public var entries: [ApplePasswordEntry]
+    public var requiresTouchID: Bool
+}
+
 /// Talks to Apple's helper over any transport. Only `credential` and `authenticatorCode` ever produce a
 /// secret, and they return it as a `Secret`.
 public actor AppleClient {
@@ -66,11 +71,15 @@ public actor AppleClient {
     private var srp: SRPClient?
     private var serverHello: (salt: [UInt8], B: BigUInt)?
     private var session: AppleSession?
+    /// `session` has been answered by the helper that's running now.
+    private var sessionChecked = false
+    private let sessionCheckTimeout: TimeInterval
     public private(set) var state: AppleConnectionState = .notConnected
     /// Non-secret facts from the helper's hello, for the Apple Passwords page.
     public private(set) var lastCapabilitiesSummary = ""
 
-    public init(transport: AppleTransport, store: AppleSessionStore, browserName: String = "Doorman") {
+    public init(transport: AppleTransport, store: AppleSessionStore, browserName: String = "Doorman", sessionCheckTimeout: TimeInterval = 5) {
+        self.sessionCheckTimeout = sessionCheckTimeout
         self.transport = transport
         self.store = store
         self.browserName = browserName
@@ -84,6 +93,7 @@ public actor AppleClient {
         guard let message = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any], let cmd = Self.int(message["cmd"]) else { return }
         if cmd == AppleCommand.passwordsDisabled || cmd == AppleCommand.reloginNeeded {
             session = nil
+            sessionChecked = false
             store.save(nil)
             state = cmd == AppleCommand.passwordsDisabled
                 ? .disabled("Passwords are off for browsers. Turn on AutoFill in the Passwords app settings.")
@@ -99,6 +109,8 @@ public actor AppleClient {
 
     /// The relay's connection went away.
     public func transportClosed() {
+        // The next helper is a new process, which won't know this session.
+        sessionChecked = false
         state = .notConnected
         failAll(AppleProtocolError.disconnected)
     }
@@ -157,8 +169,8 @@ public actor AppleClient {
 
     // MARK: Connecting
 
-    /// Asks the helper what it supports, and picks up a saved pairing if one is still good. Nothing here
-    /// shows a PIN or reads a password.
+    /// Asks the helper what it supports, and picks up a saved pairing if this helper still knows it.
+    /// Nothing here shows a PIN or reads a password.
     @discardableResult
     public func hello() async throws -> AppleConnectionState {
         let reply = try await request(AppleCommand.hello, ["cmd": AppleCommand.hello], timeout: 15)
@@ -166,13 +178,40 @@ public actor AppleClient {
         useBase64 = capabilities["shouldUseBase64"] as? Bool ?? false
         // Facts about the helper only. There's nothing secret in a hello.
         lastCapabilitiesSummary = capabilities.keys.sorted().map { "\($0)=\(capabilities[$0] ?? "")" }.joined(separator: ", ")
-        if let saved = store.load(), saved.useBase64 == useBase64 {
-            session = saved
+        // A sign-in can say hello while you're typing the code. That mustn't take the code box away.
+        if state == .waitingForPIN, srp != nil { return state }
+        if sessionChecked, session?.useBase64 == useBase64 {
+            state = .paired
+            return state
+        }
+        guard let saved = store.load(), saved.useBase64 == useBase64 else {
+            session = nil
+            sessionChecked = false
+            state = .needsPairing
+            return state
+        }
+        session = saved
+        if await savedSessionIsKnown() {
+            sessionChecked = true
             state = .paired
         } else {
+            session = nil
+            store.save(nil)
             state = .needsPairing
         }
         return state
+    }
+
+    /// A new helper doesn't answer a session it doesn't know, it just stays silent, and Apple's own
+    /// extension starts over on every hello. So a saved pairing only counts once this helper has answered.
+    private func savedSessionIsKnown() async -> Bool {
+        let site = "doorman.invalid"
+        do {
+            _ = try await encrypted(AppleCommand.loginNames, qid: "CmdGetLoginNames4URL", body: ["ACT": 5, "URL": site], url: site, timeout: sessionCheckTimeout)
+            return true
+        } catch {
+            return false
+        }
     }
 
     /// Makes macOS show its 6-digit PIN.
@@ -216,6 +255,7 @@ public actor AppleClient {
         }
         let saved = AppleSession(tid: client.tid, key: Data(proof.sessionKey.prefix(16)), useBase64: useBase64)
         session = saved
+        sessionChecked = true
         store.save(saved)
         srp = nil
         serverHello = nil
@@ -231,6 +271,7 @@ public actor AppleClient {
 
     public func forgetPairing() {
         session = nil
+        sessionChecked = false
         store.save(nil)
         state = .needsPairing
     }
@@ -278,6 +319,7 @@ public actor AppleClient {
 
     private func invalidSession() throws -> [String: Any] {
         session = nil
+        sessionChecked = false
         store.save(nil)
         state = .needsPairing
         throw AppleProtocolError.notPaired
@@ -292,19 +334,26 @@ public actor AppleClient {
 
     /// Login names saved for a site. No passwords come back from this, which is what Settings uses.
     public func loginNames(site: String) async throws -> [ApplePasswordEntry] {
+        try await lookup(site: site).entries
+    }
+
+    /// The saved logins for a site, and whether Apple will ask for Touch ID before handing over a password.
+    public func lookup(site: String) async throws -> AppleLookup {
         let decoded = try await encrypted(AppleCommand.loginNames, qid: "CmdGetLoginNames4URL", body: ["ACT": 5, "URL": site], url: site, timeout: 30)
-        return Self.entries(decoded).compactMap { e in
+        let entries = Self.entries(decoded).compactMap { e -> ApplePasswordEntry? in
             guard let usr = e["USR"] as? String, usr != "Passwords\u{a0}not\u{a0}saved" else { return nil }
             return ApplePasswordEntry(username: usr, sites: e["sites"] as? [String] ?? [])
         }
+        return AppleLookup(entries: entries, requiresTouchID: decoded["RequiresUserAuthenticationToFill"] as? Bool ?? false)
     }
 
     public func credential(site: String, username: String) async throws -> Credential? {
         let decoded = try await encrypted(AppleCommand.password, qid: "CmdGetPassword4LoginName", body: ["ACT": 2, "URL": site, "USR": username], url: site)
         let list = Self.entries(decoded)
         guard let hit = list.first(where: { ($0["USR"] as? String) == username }), let pwd = hit["PWD"] as? String, !pwd.isEmpty else { return nil }
-        // If the helper names the entry's sites, this site has to be one of them.
-        if let sites = hit["sites"] as? [String], !sites.isEmpty, !sites.contains(where: { Approval.siteMatches(site: $0, host: site) }) { return nil }
+        // Replies only carry a command number, so a late answer about another site could land here. The
+        // entry has to name this site. Apple's own extension relies on the same field.
+        guard let sites = hit["sites"] as? [String], sites.contains(where: { Approval.siteMatches(site: $0, host: site) }) else { return nil }
         return Credential(username: username, password: Secret(pwd))
     }
 
@@ -312,8 +361,8 @@ public actor AppleClient {
         var body: [String: Any] = ["ACT": 2, "TYPE": "oneTimeCodes", "frameURLs": [url]]
         if !username.isEmpty { body["username"] = username }
         let decoded = try await encrypted(AppleCommand.getCode, qid: "CmdDidFillOneTimeCode", body: body, url: nil)
-        let list = Self.entries(decoded)
-        let hit = list.first(where: { ($0["username"] as? String) == username }) ?? list.first
+        // Only this login's code. Anything else comes back as nothing, and you get asked to type it.
+        let hit = Self.entries(decoded).first { ($0["source"] as? String ?? "totp") == "totp" && ($0["username"] as? String) == username }
         return (hit?["code"] as? String).map { Secret($0) }
     }
 

@@ -35,16 +35,23 @@ public enum PeerCheck {
     }
 
     public static func isSignedBrowser(pid: pid_t) -> Bool {
+        browsers.contains { isSigned(pid: pid, identifier: $0.id, team: $0.team) }
+    }
+
+    /// The real Claude app, signed by Anthropic. Accessibility hands it passwords, and a bundle identifier
+    /// alone is just a name another app can copy.
+    public static func isSignedClaude(pid: pid_t) -> Bool {
+        isSigned(pid: pid, identifier: "com.anthropic.claudefordesktop", team: "Q6L2SF6YDW")
+    }
+
+    private static func isSigned(pid: pid_t, identifier: String, team: String) -> Bool {
         var code: SecCode?
         let attrs = [kSecGuestAttributePid: NSNumber(value: pid)] as CFDictionary
         guard SecCodeCopyGuestWithAttributes(nil, attrs, [], &code) == errSecSuccess, let code else { return false }
-        for browser in browsers {
-            var requirement: SecRequirement?
-            let text = "anchor apple generic and identifier \"\(browser.id)\" and certificate leaf[subject.OU] = \"\(browser.team)\"" as CFString
-            guard SecRequirementCreateWithString(text, [], &requirement) == errSecSuccess else { continue }
-            if SecCodeCheckValidity(code, [], requirement) == errSecSuccess { return true }
-        }
-        return false
+        var requirement: SecRequirement?
+        let text = "anchor apple generic and identifier \"\(identifier)\" and certificate leaf[subject.OU] = \"\(team)\"" as CFString
+        guard SecRequirementCreateWithString(text, [], &requirement) == errSecSuccess else { return false }
+        return SecCodeCheckValidity(code, [], requirement) == errSecSuccess
     }
 
     /// The content hash of a signed program on disk.

@@ -53,8 +53,8 @@ func sampleSettings() -> DoormanSettings {
 func sampleActivity() -> [ActivityEntry] {
     let now = Date()
     return [
-        ActivityEntry(time: now.addingTimeInterval(-120), agent: "claude-code", app: "Acme Production", role: "Superadmin", account: "Prod superadmin", host: "app.example.com", via: "Google Chrome", status: .signedIn),
-        ActivityEntry(time: now.addingTimeInterval(-3600), agent: "playwright", app: "Acme Staging", role: "Technician", account: "Staging tech 66", host: "staging.example.net", via: "Session file", status: .signedIn),
+        ActivityEntry(time: now.addingTimeInterval(-120), agent: "claude-code", app: "Acme Production", role: "Superadmin", account: "Prod superadmin", host: "app.example.com", via: "Google Chrome", status: .filled),
+        ActivityEntry(time: now.addingTimeInterval(-3600), agent: "playwright", app: "Acme Staging", role: "Technician", account: "Staging tech 66", host: "staging.example.net", via: "Session file", status: .filled),
         ActivityEntry(time: now.addingTimeInterval(-7200), agent: "claude-code", app: "Acme Production", role: "Admin", account: "Prod admin", host: "app.example.com", via: "Google Chrome", status: .denied, reason: "user_denied"),
         ActivityEntry(time: now.addingTimeInterval(-9000), agent: "browser-use", host: "unknown-site.io", status: .needsYou, reason: "no_app"),
     ]
@@ -63,6 +63,14 @@ func sampleActivity() -> [ActivityEntry] {
 let prodPrompt = ApprovalRequest(app: "Acme Production", appIsTest: false, role: "Superadmin", roleWarning: "Reaches every customer org", roleWasAsked: false,
                                  accounts: [AccountChoice(id: UUID(), name: "Prod superadmin", login: "you@example.com")], host: "app.example.com", via: "Google Chrome",
                                  windowTitle: "Acme Admin", steps: "Email code from no-reply@example.com or login@mail.example.org", agent: "claude-code", agentReason: "Open the staging deploy page you asked for.")
+let applePrompt = ApprovalRequest(app: "login.example.com", appIsTest: false, role: "", roleWarning: "You haven't added this site", roleWasAsked: false,
+                                  accounts: [AccountChoice(id: UUID(), name: "you@example.com", login: "you@example.com", passwordSite: "login.example.com", touchIDFollows: true)],
+                                  host: "login.example.com", via: "Claude's browser", windowTitle: "Sign in", steps: "Password from Apple Passwords, plus a code if the site asks", agent: "claude-code", agentReason: "You asked me to log in to check the invoices")
+let suggestedLogin = UUID()
+let suggestedPrompt = ApprovalRequest(app: "app.example.com", appIsTest: false, role: "", roleWarning: "You haven't added this site", roleWasAsked: false,
+                                      accounts: [AccountChoice(id: UUID(), name: "you@example.com", login: "you@example.com", passwordSite: "app.example.com", touchIDFollows: true),
+                                                 AccountChoice(id: suggestedLogin, name: "work@example.com", login: "work@example.com", passwordSite: "app.example.com", touchIDFollows: true)],
+                                      host: "app.example.com", via: "Claude's browser", windowTitle: "Log in", steps: "Password from Apple Passwords, plus a code if the site asks", agent: "claude-code", agentReason: "You asked me to log in", suggestedAccountID: suggestedLogin)
 let pickPrompt = ApprovalRequest(app: "Acme Staging", appIsTest: true, role: "Technician", roleWarning: "", roleWasAsked: true,
                                  accounts: [AccountChoice(id: UUID(), name: "Staging tech 66", login: "tech66@example.com"), AccountChoice(id: UUID(), name: "Staging tech 65", login: "tech65@example.com")],
                                  host: "staging.example.net", via: "Google Chrome", windowTitle: "Technician console", steps: "Password, plus an authenticator code if asked", agent: "claude-code", agentReason: "")
@@ -78,6 +86,8 @@ func renderAll() {
 
     for dark in [false, true] {
         render("approval-prod", ApprovalView(request: prodPrompt, onApprove: { _ in }, onDeny: {}).fixedSize(), size: CGSize(width: 440, height: 336), dark: dark)
+        render("approval-apple", ApprovalView(request: applePrompt, onApprove: { _ in }, onDeny: {}).fixedSize(), size: CGSize(width: 440, height: 300), dark: dark)
+        render("approval-suggested", ApprovalView(request: suggestedPrompt, onApprove: { _ in }, onDeny: {}).fixedSize(), size: CGSize(width: 440, height: 340), dark: dark)
         render("approval-pick", ApprovalView(request: pickPrompt, onApprove: { _ in }, onDeny: {}).fixedSize(), size: CGSize(width: 440, height: 300), dark: dark)
         render("menu", MenuContent().environmentObject(model), size: CGSize(width: 280, height: 240), dark: dark)
         model.selection = .app(model.draft.apps[0].id)
@@ -103,7 +113,8 @@ func renderAll() {
     for dark in [false, true] {
         render("prompt-code", CodePromptView(app: "Acme Staging", account: "Superadmin", onSubmit: { _ in }, onCancel: {}).fixedSize(), size: CGSize(width: 400, height: 214), dark: dark)
         render("status-working", StatusView(status: .init(text: "Waiting for the code in your email", detail: "", kind: .working)).fixedSize(), size: CGSize(width: 300, height: 56), dark: dark)
-        render("status-done", StatusView(status: .init(text: "Signed in to Acme Staging", detail: "for claude-code", kind: .success)).fixedSize(), size: CGSize(width: 300, height: 56), dark: dark)
+        render("status-problem", StatusView(status: .init(text: "Couldn't sign in to login.example.com", detail: "left expected site", kind: .problem)).fixedSize(), size: CGSize(width: 320, height: 90), dark: dark)
+        render("status-done", StatusView(status: .init(text: "Filled in Acme Staging", detail: "for claude-code", kind: .success)).fixedSize(), size: CGSize(width: 300, height: 56), dark: dark)
     }
     let empty = AppModel()
     render("settings-empty", SettingsRoot().environmentObject(empty), size: CGSize(width: 900, height: 500))

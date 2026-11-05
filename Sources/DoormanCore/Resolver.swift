@@ -75,13 +75,22 @@ public enum Approval {
     /// Whether an Apple Passwords site belongs with this host: the same name, or one inside the other.
     /// A mismatch still works, because someone may share a login on purpose, but the prompt says so.
     public static func siteMatches(site: String, host: String) -> Bool {
-        func bare(_ s: String) -> String {
-            let h = normalizeHost(s)
-            return h.split(separator: ":").first.map(String.init) ?? h
-        }
-        let a = bare(site), b = bare(host)
-        return !a.isEmpty && (a == b || a.hasSuffix("." + b) || b.hasSuffix("." + a))
+        let a = bareHost(site), b = bareHost(host)
+        guard !a.isEmpty else { return false }
+        if a == b { return true }
+        let parent = a.hasSuffix("." + b) ? b : b.hasSuffix("." + a) ? a : nil
+        guard let parent, parent.contains("."), !sharedSuffixes.contains(parent) else { return false }
+        return true
     }
+
+    /// Domains where each subdomain belongs to a different person, so one isn't "the same site" as the
+    /// next. The common ones, not the whole public suffix list.
+    private static let sharedSuffixes: Set<String> = [
+        "vercel.app", "github.io", "gitlab.io", "netlify.app", "pages.dev", "workers.dev", "web.app", "firebaseapp.com",
+        "herokuapp.com", "azurewebsites.net", "cloudfront.net", "amazonaws.com", "onrender.com", "fly.dev", "railway.app",
+        "ngrok.io", "ngrok.app", "ngrok-free.app", "replit.app", "surge.sh", "wixsite.com", "webflow.io", "blogspot.com",
+        "co.uk", "org.uk", "ac.uk", "com.au", "net.au", "org.au", "co.nz", "co.jp", "co.in", "co.kr", "com.br", "com.mx", "com.cn",
+    ]
 
     /// Every account asks first unless you turned that off for it. Turning it off is a settings change,
     /// so it takes Touch ID, and an agent can't do it.
