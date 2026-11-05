@@ -80,7 +80,7 @@ public final class ExtensionAdapter: BrowserAdapter, @unchecked Sendable {
         guard let url = result["url"] as? String else { throw BrowserError.failed("no page") }
         return PageState(url: url, username: result["username"] as? Bool ?? false, password: result["password"] as? Bool ?? false,
                          code: result["code"] as? Bool ?? false, captcha: result["captcha"] as? Bool ?? false,
-                         loginHints: result["loginHints"] as? Bool ?? false, frameLogin: result["frameLogin"] as? Bool ?? false)
+                         frameLogin: result["frameLogin"] as? Bool ?? false)
     }
 
     public func fillLogin(tab: String, expectedHost: String, username: String?, password: Secret?, submit: Bool) async throws {

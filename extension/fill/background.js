@@ -118,15 +118,12 @@ function pageAction(action, args) {
 
   if (action === 'inspect') {
     const captcha = [...document.querySelectorAll('.g-recaptcha, .h-captcha, .cf-turnstile, iframe[src*="recaptcha"], iframe[src*="hcaptcha"], iframe[src*="challenges.cloudflare.com"]')].some(visible);
-    const headings = deep(document, 'h1, h2, button, input[type=submit]').filter(visible).map(label).join(' ');
-    const hintRe = /(sign[- ]?in|log[- ]?in|verify|two[- ]?(factor|step)|one[- ]?time|verification|authenticat|enter (the|your) code|send (me )?(a )?code|magic link|check your email)/i;
     return {
       url: here,
       username: Boolean(usernameField()),
       password: Boolean(password()),
       code: Boolean(splitCode() || codeField()),
       captcha,
-      loginHints: hintRe.test(`${document.title} ${headings}`),
     };
   }
 

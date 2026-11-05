@@ -9,7 +9,10 @@ public struct IMAPMailSource: MailSource {
         public var port: Int
         public var username: String
         public var useTLS: Bool
-        public init(host: String, port: Int = 993, username: String, useTLS: Bool = true) {
+        /// See `RawMail.authServer`.
+        public var authServer: String?
+        public init(host: String, port: Int = 993, username: String, useTLS: Bool = true, authServer: String? = nil) {
+            self.authServer = authServer
             self.host = host
             self.port = port
             self.username = username
@@ -41,7 +44,7 @@ public struct IMAPMailSource: MailSource {
             let reply = try await session.command("UID FETCH \(id) (BODY.PEEK[] INTERNALDATE)")
             guard let literal = reply.literals.first else { continue }
             let date = Self.internalDate(reply.text) ?? Date()
-            if date >= since { out.append(RawMail(received: date, rfc822: literal)) }
+            if date >= since { out.append(RawMail(received: date, rfc822: literal, authServer: config.authServer)) }
         }
         _ = try? await session.command("LOGOUT")
         return out

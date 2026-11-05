@@ -98,7 +98,8 @@ struct StatusText: View {
     }
     private var label: String {
         switch status {
-        case .signedIn: return "Signed in"
+        case .filled: return "Filled"
+        case .nothingToFill: return "Nothing to fill"
         case .denied: return "Denied"
         case .timeout: return "Timed out"
         case .needsYou: return "Needs you"
@@ -109,7 +110,8 @@ struct StatusText: View {
     }
     private var color: Color {
         switch status {
-        case .signedIn: return .green
+        case .filled: return .green
+        case .nothingToFill: return .secondary
         case .denied, .failed: return .red
         default: return .orange
         }

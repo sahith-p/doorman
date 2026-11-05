@@ -59,6 +59,7 @@ const scenarios = {
   password: 'Password only',
   totp: 'Password, then an authenticator code',
   twostep: 'Email first, then password on the next page',
+  picker: 'A remembered account to pick, then password',
   emailcode: 'Email code',
   split: 'Email code in six little boxes',
   emaillink: 'Email link',
@@ -102,6 +103,10 @@ const server = http.createServer(async (req, res) => {
     switch (scenario) {
       case 'password': case 'totp': case 'redirect':
         return send(res, page(scenarios[scenario], form(`/${scenario}/login`, emailField + passwordField)));
+      case 'picker':
+        // The decoy matters: a button that mentions the login but would remove it must never be clicked.
+        return send(res, page('Sign in: pick your account', `<form method=post action="/picker/choose"><button type=submit>${LOGIN}</button></form>
+<form method=post action="/picker/remove"><button type=submit>Remove ${LOGIN}</button></form><a href="/password/login">Use another email</a>`));
       case 'twostep': case 'emailcode': case 'split': case 'emaillink':
         return send(res, page(scenarios[scenario], form(`/${scenario}/login`, emailField)));
       case 'captcha':
@@ -134,6 +139,13 @@ const server = http.createServer(async (req, res) => {
       case 'totp/code':
         if (f.code === AUTHENTICATOR_CODE) return signedIn(res, 'totp');
         return send(res, page('Two-step verification', form('/totp/code', codeField, 'That code is wrong.')), 401);
+      case 'picker/choose':
+        return send(res, page('Enter your password', form('/picker/password', `<input type=hidden name=email value="${LOGIN}">` + passwordField)));
+      case 'picker/password':
+        if (f.email === LOGIN && f.password === PASSWORD) return signedIn(res, 'picker');
+        return send(res, page('Enter your password', form('/picker/password', `<input type=hidden name=email value="${LOGIN}">` + passwordField, 'Wrong password.')));
+      case 'picker/remove':
+        return send(res, page('Removed', '<p>That account was removed from this list.</p>'));
       case 'twostep/login':
         return send(res, page('Enter your password', form('/twostep/password', `<input type=hidden name=email value="${f.email}">` + passwordField)));
       case 'twostep/password':

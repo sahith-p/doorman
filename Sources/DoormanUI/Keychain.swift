@@ -142,6 +142,16 @@ public struct AppPasswordSource: PasswordSource {
         }
     }
 
+    public func savedLogins(site: String) async throws -> SavedLogins {
+        try await ensureConnected()
+        do {
+            let found = try await apple.client.lookup(site: normalizeHost(site))
+            return SavedLogins(names: found.entries.map(\.username), touchIDToFill: found.requiresTouchID)
+        } catch AppleProtocolError.notPaired {
+            throw PasswordSourceError.notConnected
+        }
+    }
+
     public func authenticatorCode(for account: Account, url: URL) async throws -> Secret? {
         try await ensureConnected()
         do {

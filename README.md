@@ -41,7 +41,7 @@ Or build it yourself with `make install`. You'll need Xcode.
   <img src="docs/images/get-started.png" width="720" alt="The Get started page">
 </p>
 
-1. **Connect Apple Passwords.** Click **Connect**, then **Start pairing**. macOS shows a 6-digit code, and you type it into Doorman.
+1. **Connect Apple Passwords.** Click **Connect**, then **Start pairing**. macOS shows a 6-digit code, and you type it into Doorman. You'll do this again each time Doorman restarts.
 2. **Connect a browser.** Open `chrome://extensions`, turn on **Developer mode**, click **Show extension folder** in Doorman, and drag that folder onto the page.
 3. **Connect your email (optional).** For sites that email a code or a link. See [Email](#email).
 4. **Give an agent access.** For Claude Code, copy the command from **Get started**. It looks like this:
@@ -83,7 +83,7 @@ The desktop app's Chat tab has its own list of MCP servers, and doesn't see ones
 2. A popup appears over whatever you're doing, without bringing up Doorman's window. It shows the site and the login. Press Return or click **Approve**, then use Touch ID.
 3. Doorman checks the page's real address, fills it, and submits. A note in the corner shows each step.
 4. If the site asks for a code, Doorman gets it from Apple Passwords or your email, or asks you to type it into Doorman.
-5. The agent gets a status back: `signed_in`, `denied`, `needs_you`, `failed`, `timeout`, `paused` or `pending`.
+5. The agent gets a status back: `filled`, `nothing_to_fill`, `denied`, `needs_you`, `failed`, `timeout`, `paused` or `pending`. Doorman doesn't judge whether you're signed in. The agent looks at the page, and handles anything that isn't a secret itself, like picking an account or pressing Continue.
 
 The agent never gets a password, a code or the contents of an email. Every attempt is listed under **Activity**.
 

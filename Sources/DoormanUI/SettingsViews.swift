@@ -641,7 +641,7 @@ struct ApplePasswordsView: View {
 
             if model.appleState == .needsPairing {
                 Section("Pair with Apple Passwords") {
-                    Text("macOS shows a 6-digit code on screen, and you type it here. You'll do this again if Apple's helper forgets the session, usually after a restart.")
+                    Text("macOS shows a 6-digit code on screen, and you type it here. You'll do this again each time Doorman restarts, because Apple's helper doesn't remember a session between runs.")
                         .font(.callout)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -766,6 +766,11 @@ struct EmailView: View {
                     TextField("Address", text: $model.draft.mail.address, prompt: Text("you@example.com"))
                     TextField("Server", text: $model.draft.mail.imapHost)
                     TextField("Port", value: $model.draft.mail.imapPort, format: .number.grouping(.never))
+                    TextField("Mail server's name", text: $model.draft.mail.imapAuthServer, prompt: Text(model.draft.mail.imapTrustedAuthServer ?? "mx.example.com"))
+                    Text("The name after Authentication-Results: at the top of an email's headers. Doorman only trusts that line from this server, because anyone can write one into their own email. Without it, Doorman can't use email from this mailbox.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                     SecureField("App password", text: $model.imapPasswordDraft, prompt: Text(model.hasIMAPPassword ? "Saved. Type to replace it" : "An app password, not your main one"))
                     HStack {
                         Spacer()

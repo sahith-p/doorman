@@ -1,7 +1,11 @@
 import Foundation
 
 public enum SignInStatus: String, Codable, Sendable {
-    case signedIn = "signed_in"
+    /// Doorman filled what the page asked for and submitted it. It doesn't judge whether that worked: the
+    /// agent can see the page and decides.
+    case filled
+    /// The page has no box to fill, so nothing was done and nothing was asked.
+    case nothingToFill = "nothing_to_fill"
     case denied
     case timeout
     case needsYou = "needs_you"
@@ -39,7 +43,8 @@ public struct SignInResult: Codable, Equatable, Sendable {
 }
 
 public enum Reason {
-    public static let alreadySignedIn = "already_signed_in"
+    public static let nothingToFill = "nothing_to_fill"
+    public static let movedOn = "moved_to_another_host"
     public static let invalidAddress = "invalid_address"
     public static let noApp = "no_app"
     public static let tooManyLookups = "too_many_lookups"
@@ -68,6 +73,9 @@ public enum Reason {
     public static let timedOut = "timed_out"
     public static let browserError = "browser_error"
     public static let noForm = "no_login_form"
+    public static let pageLost = "page_lost"
+    public static let fieldGone = "field_disappeared"
+    public static let pageRefused = "page_refused_value"
 }
 
 public struct SignInRequest: Sendable {
@@ -107,9 +115,13 @@ public struct ApprovalRequest: Sendable, Identifiable {
     public var agent: String
     /// Written by the agent. The prompt labels it as not verified.
     public var agentReason: String
+    /// The login the agent named, already selected. Not verified, and the rest stay in the list.
+    public var suggestedAccountID: UUID?
 
     public init(app: String, appIsTest: Bool, role: String, roleWarning: String, roleWasAsked: Bool,
-                accounts: [AccountChoice], host: String, via: String, windowTitle: String, steps: String, agent: String, agentReason: String) {
+                accounts: [AccountChoice], host: String, via: String, windowTitle: String, steps: String, agent: String, agentReason: String,
+                suggestedAccountID: UUID? = nil) {
+        self.suggestedAccountID = suggestedAccountID
         self.app = app
         self.appIsTest = appIsTest
         self.role = role
@@ -131,7 +143,10 @@ public struct AccountChoice: Sendable, Equatable, Identifiable {
     public var login: String
     /// The Apple Passwords site this account reads from, shown so a mismatch can't go unnoticed.
     public var passwordSite: String?
-    public init(id: UUID, name: String, login: String, passwordSite: String? = nil) {
+    /// Apple Passwords asks for Touch ID itself when it hands over this password, so Approve is only a click.
+    public var touchIDFollows: Bool
+    public init(id: UUID, name: String, login: String, passwordSite: String? = nil, touchIDFollows: Bool = false) {
+        self.touchIDFollows = touchIDFollows
         self.id = id
         self.name = name
         self.login = login
@@ -150,18 +165,26 @@ public protocol Approver: Sendable {
     func approve(_ request: ApprovalRequest) async -> ApprovalDecision
     /// "Ask me" codes: you read the code off your phone and type it into Doorman, not into the agent.
     func askForCode(app: String, account: String) async -> Secret?
+    /// Touch ID alone, for when Approve was only a click and Apple's own Touch ID didn't cover what's next.
+    func confirmFingerprint(app: String, role: String) async -> Bool
+}
+
+public struct SavedLogins: Sendable, Equatable {
+    public var names: [String]
+    /// Apple's helper says it will ask for Touch ID itself before handing over one of these passwords.
+    public var touchIDToFill: Bool
+    public init(names: [String], touchIDToFill: Bool = false) {
+        self.names = names
+        self.touchIDToFill = touchIDToFill
+    }
 }
 
 public protocol PasswordSource: Sendable {
-    /// Login names saved for a site, for sites you haven't added. Reads no password.
-    func loginNames(site: String) async throws -> [String]
+    /// Login names saved for a site. Reads no password.
+    func savedLogins(site: String) async throws -> SavedLogins
     func credential(for account: Account, host: String) async throws -> Credential
     /// A current authenticator code from Apple Passwords, if the entry has one.
     func authenticatorCode(for account: Account, url: URL) async throws -> Secret?
-}
-
-extension PasswordSource {
-    public func loginNames(site: String) async throws -> [String] { [] }
 }
 
 public enum PasswordSourceError: Error, Sendable, Equatable {
@@ -173,9 +196,13 @@ public enum PasswordSourceError: Error, Sendable, Equatable {
 public struct RawMail: Sendable {
     public var received: Date
     public var rfc822: Data
-    public init(received: Date, rfc822: Data) {
+    /// Who this mailbox's own mail server calls itself in Authentication-Results. With none, nothing can
+    /// tell its header from one the sender wrote, so the message can't be verified.
+    public var authServer: String?
+    public init(received: Date, rfc822: Data, authServer: String? = nil) {
         self.received = received
         self.rfc822 = rfc822
+        self.authServer = authServer
     }
 }
 
@@ -209,18 +236,15 @@ public struct PageState: Codable, Sendable, Equatable {
     public var password: Bool
     public var code: Bool
     public var captcha: Bool
-    /// The page's title, headings or buttons read like a sign-in step.
-    public var loginHints: Bool
     /// A sign-in form in an embedded frame, which Doorman won't fill.
     public var frameLogin: Bool
 
-    public init(url: String, username: Bool = false, password: Bool = false, code: Bool = false, captcha: Bool = false, loginHints: Bool = false, frameLogin: Bool = false) {
+    public init(url: String, username: Bool = false, password: Bool = false, code: Bool = false, captcha: Bool = false, frameLogin: Bool = false) {
         self.url = url
         self.username = username
         self.password = password
         self.code = code
         self.captcha = captcha
-        self.loginHints = loginHints
         self.frameLogin = frameLogin
     }
 }
@@ -251,6 +275,7 @@ public struct StaticPasswordSource: PasswordSource {
         self.password = Secret(password)
         self.code = code.map { Secret($0) }
     }
+    public func savedLogins(site: String) async throws -> SavedLogins { SavedLogins(names: []) }
     public func credential(for account: Account, host: String) async throws -> Credential {
         Credential(username: account.login, password: password)
     }

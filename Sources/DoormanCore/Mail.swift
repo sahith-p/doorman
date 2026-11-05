@@ -227,6 +227,16 @@ public enum MailExtract {
         return mail.from.hasSuffix("@" + domain)
     }
 
+    /// Whether your own mail server wrote the header `verified` is about to trust. If a server adds none,
+    /// the first one in the message is whatever the sender put there, so it has to carry the right name.
+    /// A comma-separated list is allowed, and a name covers its subdomains (`messagingengine.com`).
+    public static func writtenByYourServer(_ mail: ParsedMail, server: String?) -> Bool {
+        let wanted = (server ?? "").lowercased().split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+        guard let section = mail.authenticationResults.lowercased().split(separator: ";", maxSplits: 1).first,
+              let name = section.split(whereSeparator: \.isWhitespace).first.map(String.init), !name.contains("=") else { return false }
+        return wanted.contains { name == $0 || name.hasSuffix("." + $0) }
+    }
+
     /// Whether your mail server recorded that the From address's domain really sent this.
     public static func verified(_ mail: ParsedMail) -> Bool {
         guard let domain = mail.from.split(separator: "@").last.map(String.init) else { return false }

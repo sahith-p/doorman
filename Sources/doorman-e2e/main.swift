@@ -28,6 +28,7 @@ final class RecordingApprover: Approver, @unchecked Sendable {
         return .approved(accountID: request.accounts[0].id)
     }
     func askForCode(app: String, account: String) async -> Secret? { nil }
+    func confirmFingerprint(app: String, role: String) async -> Bool { true }
 }
 
 /// Wrong password for the one account meant to get it wrong.
@@ -37,7 +38,7 @@ struct DemoPasswords: PasswordSource {
     }
     func authenticatorCode(for account: Account, url: URL) async throws -> Secret? { Secret(demoCode) }
     /// The demo site answers on 127.0.0.1 too, which no app is set up for: a site you haven't added.
-    func loginNames(site: String) async throws -> [String] { site == "127.0.0.1" ? ["demo@doorman.test"] : [] }
+    func savedLogins(site: String) async throws -> SavedLogins { SavedLogins(names: site == "127.0.0.1" ? ["demo@doorman.test"] : []) }
 }
 
 func demoSettings() -> DoormanSettings {
@@ -52,6 +53,7 @@ func demoSettings() -> DoormanSettings {
     add("password", .password)
     add("totp", .password)
     add("twostep", .password, rule: .noPopup)
+    add("picker", .password)
     add("emailcode", .emailCode)
     add("split", .emailCode)
     add("emaillink", .emailLink, code: .none)
@@ -205,21 +207,23 @@ func runAll() async throws {
     }
 
     print("\nSign-ins that should work")
-    var at = try await signIn("password", account: "password", expect: "signed_in", label: "password only")
+    var at = try await signIn("password", account: "password", expect: "filled", label: "password only")
     check(at.hasSuffix("/password/home"), "  landed on the signed-in page")
-    at = try await signIn("totp", expect: "signed_in", label: "password, then an authenticator code the site asked for")
+    at = try await signIn("totp", expect: "filled", label: "password, then an authenticator code the site asked for")
     check(at.hasSuffix("/totp/home"), "  landed on the signed-in page")
     let promptsBefore = approver.requests.value.count
-    at = try await signIn("twostep", expect: "signed_in", label: "login name, then password on the next page, on a no-popup account")
+    at = try await signIn("twostep", expect: "filled", label: "login name, then password on the next page, on a no-popup account")
     check(at.hasSuffix("/twostep/home"), "  landed on the signed-in page")
     check(approver.requests.value.count == promptsBefore, "  a no-popup account skipped the prompt")
-    at = try await signIn("emailcode", expect: "signed_in", label: "email code, read from the mailbox")
+    at = try await signIn("picker", expect: "nothing_to_fill", label: "a list of accounts is left for the agent to pick from")
+    check(at.hasSuffix("/picker/login"), "  nothing on that page was clicked")
+    at = try await signIn("emailcode", expect: "filled", label: "email code, read from the mailbox")
     check(at.hasSuffix("/emailcode/home"), "  landed on the signed-in page")
-    at = try await signIn("split", expect: "signed_in", label: "email code typed into six separate boxes")
+    at = try await signIn("split", expect: "filled", label: "email code typed into six separate boxes")
     check(at.hasSuffix("/split/home"), "  landed on the signed-in page")
-    at = try await signIn("emaillink", expect: "signed_in", label: "email link opened in the same tab")
+    at = try await signIn("emaillink", expect: "filled", label: "email link opened in the same tab")
     check(at.hasSuffix("/emaillink/home"), "  landed on the signed-in page")
-    at = try await signIn("controlled", expect: "signed_in", label: "a page that only reads input events, like React")
+    at = try await signIn("controlled", expect: "filled", label: "a page that only reads input events, like React")
     check(at.hasSuffix("/controlled/home"), "  landed on the signed-in page")
 
     print("\nSign-ins that should stop")
@@ -238,7 +242,7 @@ func runAll() async throws {
     try await Task.sleep(nanoseconds: 400_000_000)
     let promptsBeforeUnadded = approver.requests.value.count
     let unadded = client.tool("sign_in", ["url": plainURL, "reason": "e2e unadded"])
-    check(unadded["status"] as? String == "signed_in", "signed in with no app set up for it: \(unadded["status"] ?? "none") \(unadded["reason"] ?? "")")
+    check(unadded["status"] as? String == "filled", "signed in with no app set up for it: \(unadded["status"] ?? "none") \(unadded["reason"] ?? "")")
     check(approver.requests.value.count == promptsBeforeUnadded + 1, "  it asked first")
     check(approver.requests.value.last?.roleWarning == "You haven't added this site", "  the prompt said you hadn't added it")
     let afterUnadded = (try? await adapter.tabs())?.first(where: { $0.active })?.url ?? ""
@@ -275,7 +279,7 @@ func runAll() async throws {
 
     print("\nSession file, for browsers an agent starts itself")
     let saved = client.tool("sign_in", ["url": "\(base)/password/login", "session_file": true, "account": "password"])
-    check(saved["status"] as? String == "signed_in", "signed in inside a hidden browser")
+    check(saved["status"] as? String == "filled", "signed in inside a hidden browser")
     if let path = saved["sessionFile"] as? String, let data = FileManager.default.contents(atPath: path),
        let state = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] {
         let cookies = (state["cookies"] as? [[String: Any]]) ?? []

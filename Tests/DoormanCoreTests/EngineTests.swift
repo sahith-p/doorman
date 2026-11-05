@@ -11,16 +11,16 @@ final class EngineTests: XCTestCase {
                      adapters: { browser.map { [$0] } ?? [] }, activity: activity, timing: fastTiming())
     }
 
-    private func page(_ url: String? = nil, username: Bool = false, password: Bool = false, code: Bool = false, captcha: Bool = false, hints: Bool? = nil, frame: Bool = false) -> PageState {
+    private func page(_ url: String? = nil, username: Bool = false, password: Bool = false, code: Bool = false, captcha: Bool = false, frame: Bool = false) -> PageState {
         PageState(url: url ?? adminURL, username: username, password: password, code: code, captcha: captcha,
-                  loginHints: hints ?? (username || password || code), frameLogin: frame)
+                  frameLogin: frame)
     }
 
     func testPasswordOnlySiteNeedsNoCodeStep() async {
         let browser = FakeBrowser(url: adminURL, pages: [page(username: true, password: true), page("\(host)/home")])
         let approver = FakeApprover()
         let result = await engine(browser, approver: approver).signIn(SignInRequest(address: adminURL, reason: "deploy"))
-        XCTAssertEqual(result.status, .signedIn)
+        XCTAssertEqual(result.status, .filled)
         XCTAssertEqual(browser.fills, ["login:a@example.com:pw"])
         XCTAssertEqual(browser.filledPasswords, ["hunter2-demo"])
         XCTAssertEqual(approver.log.value.count, 1)
@@ -31,7 +31,7 @@ final class EngineTests: XCTestCase {
     func testAResultNeverCarriesASecret() async throws {
         let browser = FakeBrowser(url: adminURL, pages: [page(username: true, password: true), page(code: true), page("\(host)/home")])
         let result = await engine(browser, passwords: FakePasswords(password: "hunter2-demo", code: "424242")).signIn(SignInRequest(address: adminURL))
-        XCTAssertEqual(result.status, .signedIn)
+        XCTAssertEqual(result.status, .filled)
         let json = String(decoding: try JSONEncoder().encode(result), as: UTF8.self)
         XCTAssertFalse(json.contains("hunter2-demo"))
         XCTAssertFalse(json.contains("424242"))
@@ -41,22 +41,22 @@ final class EngineTests: XCTestCase {
     func testAuthenticatorCodeOnlyWhenTheSiteAsks() async {
         let browser = FakeBrowser(url: adminURL, pages: [page(username: true, password: true), page(code: true), page("\(host)/home")])
         let result = await engine(browser).signIn(SignInRequest(address: adminURL))
-        XCTAssertEqual(result.status, .signedIn)
+        XCTAssertEqual(result.status, .filled)
         XCTAssertEqual(browser.fills, ["login:a@example.com:pw", "code"])
     }
 
     func testTwoStepFormGetsLoginThenPassword() async {
         let browser = FakeBrowser(url: adminURL, pages: [page(username: true), page(password: true), page("\(host)/home")])
         let result = await engine(browser).signIn(SignInRequest(address: adminURL))
-        XCTAssertEqual(result.status, .signedIn)
+        XCTAssertEqual(result.status, .filled)
         XCTAssertEqual(browser.fills, ["login:a@example.com:nopw", "login:-:pw"])
     }
 
-    func testAlreadySignedIn() async {
+    func testAPageWithNoBoxesHasNothingToFill() async {
         let browser = FakeBrowser(url: "\(host)/home", pages: [page("\(host)/home")])
         let result = await engine(browser).signIn(SignInRequest(address: "\(host)/home"))
-        XCTAssertEqual(result.status, .signedIn)
-        XCTAssertEqual(result.reason, Reason.alreadySignedIn)
+        XCTAssertEqual(result.status, .nothingToFill)
+        XCTAssertEqual(result.reason, Reason.nothingToFill)
         XCTAssertEqual(browser.fills, [])
     }
 
@@ -160,7 +160,7 @@ final class EngineTests: XCTestCase {
             browser.pages = [self.page("https://links.example.com/home")]
         }
         let result = await e.signIn(SignInRequest(address: url))
-        XCTAssertEqual(result.status, .signedIn)
+        XCTAssertEqual(result.status, .filled)
         XCTAssertEqual(browser.navigations.first?.host, "click.tracker.example.net")
     }
 
@@ -168,7 +168,7 @@ final class EngineTests: XCTestCase {
         let browser = FakeBrowser(url: adminURL, pages: [page(username: true, password: true), page("\(host)/home")])
         browser.onFill = { $0.inspectFailures = 3 }
         let result = await engine(browser).signIn(SignInRequest(address: adminURL))
-        XCTAssertEqual(result.status, .signedIn)
+        XCTAssertEqual(result.status, .filled)
     }
 
     func testAPageThatStaysUnreadableFails() async {
@@ -186,41 +186,34 @@ final class EngineTests: XCTestCase {
         XCTAssertEqual(browser.filledPasswords, [])
     }
 
-    func testASignedInPageWithAnEmailBoxGetsNothing() async {
+    func testTheAgentDecidesWhatsALoginBoxNotWordsOnThePage() async {
         let url = "\(host)/settings"
-        let browser = FakeBrowser(url: url, pages: [page(url, username: true, hints: false)])
-        let result = await engine(browser).signIn(SignInRequest(address: url))
-        XCTAssertEqual(result.reason, Reason.alreadySignedIn)
-        XCTAssertEqual(browser.fills, [], "a newsletter box is not a login box")
+        let browser = FakeBrowser(url: url, pages: [page(url, username: true)])
+        let approver = FakeApprover()
+        _ = await engine(browser, approver: approver).signIn(SignInRequest(address: url))
+        XCTAssertEqual(approver.log.value.count, 1, "you still approve it")
+        XCTAssertEqual(browser.fills.count, 1)
     }
 
-    func testASignedInPageWithAPromoCodeBoxGetsNothing() async {
-        let url = "\(host)/billing"
-        let browser = FakeBrowser(url: url, pages: [page(url, code: true, hints: false)])
-        let result = await engine(browser).signIn(SignInRequest(address: url))
-        XCTAssertEqual(result.reason, Reason.alreadySignedIn)
-        XCTAssertEqual(browser.filledCodes, [])
+    func testABoxBehindAPasswordIsntTreatedAsALoginName() async {
+        // A search or email box on the page you land on, after the password has gone in.
+        let browser = FakeBrowser(url: adminURL, pages: [page(username: true, password: true), page("\(host)/home", username: true)])
+        let result = await engine(browser).signIn(SignInRequest(address: adminURL))
+        XCTAssertEqual(result.status, .filled)
+        XCTAssertEqual(browser.fills.count, 1, "only the login itself")
     }
 
     func testACodeBoxAfterAPasswordCountsEvenWithNoHints() async {
         let url = "\(host)/step2"
-        let browser = FakeBrowser(url: adminURL, pages: [page(username: true, password: true), page(url, code: true, hints: false), page("\(host)/home")])
+        let browser = FakeBrowser(url: adminURL, pages: [page(username: true, password: true), page(url, code: true), page("\(host)/home")])
         let result = await engine(browser).signIn(SignInRequest(address: adminURL))
-        XCTAssertEqual(result.status, .signedIn)
+        XCTAssertEqual(result.status, .filled)
         XCTAssertEqual(browser.filledCodes, ["424242"])
-    }
-
-    func testASignInPageWithAnUnknownFormIsNotCalledSignedIn() async {
-        let url = "\(host)/welcome"
-        let browser = FakeBrowser(url: url, pages: [page(url, hints: true)])
-        let result = await engine(browser).signIn(SignInRequest(address: url))
-        XCTAssertEqual(result.status, .needsYou)
-        XCTAssertEqual(result.reason, Reason.noForm)
     }
 
     func testAFormInAnEmbeddedFrameIsHandedBack() async {
         let url = "\(host)/welcome"
-        let browser = FakeBrowser(url: url, pages: [page(url, hints: false, frame: true)])
+        let browser = FakeBrowser(url: url, pages: [page(url, frame: true)])
         let result = await engine(browser).signIn(SignInRequest(address: url))
         XCTAssertEqual(result.status, .needsYou)
         XCTAssertEqual(result.reason, Reason.noForm)
@@ -278,7 +271,7 @@ final class EngineTests: XCTestCase {
         let browser = FakeBrowser(url: url, pages: [page(url, username: true, password: true), page("https://staging.example.net/technician/home")])
         let approver = FakeApprover()
         let result = await engine(browser, approver: approver).signIn(SignInRequest(address: url))
-        XCTAssertEqual(result.status, .signedIn)
+        XCTAssertEqual(result.status, .filled)
         XCTAssertEqual(approver.log.value.count, 1, "two test accounts match, so even no-tap accounts go through the prompt")
         XCTAssertEqual(approver.log.value[0].accounts.count, 2)
     }
@@ -288,7 +281,7 @@ final class EngineTests: XCTestCase {
         let browser = FakeBrowser(url: url, pages: [page(url, username: true, password: true), page("https://staging.example.net/home")])
         let approver = FakeApprover()
         let result = await engine(browser, approver: approver).signIn(SignInRequest(address: url))
-        XCTAssertEqual(result.status, .signedIn)
+        XCTAssertEqual(result.status, .filled)
         XCTAssertEqual(approver.log.value.count, 0)
     }
 
@@ -300,7 +293,7 @@ final class EngineTests: XCTestCase {
             if b.fills.count == 1 { mail.deliver(demoMail(from: "no-reply@example.com", subject: "Your sign-in code", body: "Your code is 123456.")) }
         }
         let result = await engine(browser, mail: mail).signIn(SignInRequest(address: url))
-        XCTAssertEqual(result.status, .signedIn)
+        XCTAssertEqual(result.status, .filled)
         XCTAssertEqual(browser.filledCodes, ["123456"])
     }
 
@@ -322,7 +315,7 @@ final class EngineTests: XCTestCase {
             if b.fills.count == 1 { mail.deliver(demoMail(from: "login@mail.example.org", subject: "Your Acme Admin Code", body: "Your code is 246810.")) }
         }
         let result = await engine(browser, mail: mail).signIn(SignInRequest(address: url))
-        XCTAssertEqual(result.status, .signedIn)
+        XCTAssertEqual(result.status, .filled)
         XCTAssertEqual(browser.filledCodes, ["246810"])
     }
 
@@ -355,11 +348,11 @@ final class EngineTests: XCTestCase {
         XCTAssertEqual(browser.filledCodes, [])
     }
 
-    func testNoTapWhenAlreadySignedIn() async {
+    func testNoTapWhenThereIsNothingToFill() async {
         let browser = FakeBrowser(url: "\(host)/home", pages: [page("\(host)/home")])
         let approver = FakeApprover()
         let result = await engine(browser, approver: approver).signIn(SignInRequest(address: "\(host)/home"))
-        XCTAssertEqual(result.reason, Reason.alreadySignedIn)
+        XCTAssertEqual(result.reason, Reason.nothingToFill)
         XCTAssertEqual(approver.log.value.count, 0, "nothing to approve")
     }
 
@@ -367,7 +360,7 @@ final class EngineTests: XCTestCase {
         let url = "https://app.example.com/admin"
         let browser = FakeBrowser(url: url, pages: [page(url, username: true), page(url, code: true), page("https://app.example.com/admin/home")])
         let result = await engine(browser, approver: FakeApprover(typedCode: "135790"), mail: FakeMail(error: .notConnected)).signIn(SignInRequest(address: url))
-        XCTAssertEqual(result.status, .signedIn)
+        XCTAssertEqual(result.status, .filled)
         XCTAssertEqual(browser.filledCodes, ["135790"])
     }
 
@@ -400,7 +393,7 @@ final class EngineTests: XCTestCase {
             if b.fills.count == 1 { mail.deliver(demoMail(from: "login@example.com", subject: "Sign in", body: "Sign in here: https://links.example.com/magic?token=abc")) }
         }
         let result = await engine(browser, settings: linkSettings(), mail: mail).signIn(SignInRequest(address: url))
-        XCTAssertEqual(result.status, .signedIn)
+        XCTAssertEqual(result.status, .filled)
         XCTAssertEqual(browser.navigations.map(\.absoluteString), ["https://links.example.com/magic?token=abc"])
     }
 
@@ -422,7 +415,7 @@ final class EngineTests: XCTestCase {
         for i in s.apps[0].roles.indices { s.apps[0].roles[i].codeIfAsked = .askMe }
         let browser = FakeBrowser(url: adminURL, pages: [page(username: true, password: true), page(code: true), page("\(host)/home")])
         let result = await engine(browser, settings: s, approver: FakeApprover(typedCode: "987654")).signIn(SignInRequest(address: adminURL))
-        XCTAssertEqual(result.status, .signedIn)
+        XCTAssertEqual(result.status, .filled)
         XCTAssertEqual(browser.filledCodes, ["987654"])
     }
 
@@ -434,11 +427,11 @@ final class EngineTests: XCTestCase {
         XCTAssertEqual(result.reason, Reason.codeRequested)
     }
 
-    func testStuckOnALoginPathIsNotCalledSignedIn() async {
-        let browser = FakeBrowser(url: adminURL, pages: [page(username: true, password: true), page("\(host)/login", hints: false)])
+    func testWhereThePageLandedIsForTheAgentToJudge() async {
+        let browser = FakeBrowser(url: adminURL, pages: [page(username: true, password: true), page("\(host)/login")])
         let result = await engine(browser).signIn(SignInRequest(address: adminURL))
-        XCTAssertEqual(result.status, .needsYou)
-        XCTAssertEqual(result.reason, Reason.noForm)
+        XCTAssertEqual(result.status, .filled, "it reports what it did, and doesn't guess from the address")
+        XCTAssertTrue(result.message.contains("Look at the page"))
     }
 
     func testActivityRecordsTheAttemptWithoutSecrets() async throws {
@@ -446,7 +439,7 @@ final class EngineTests: XCTestCase {
         let browser = FakeBrowser(url: adminURL, pages: [page(username: true, password: true), page("\(host)/home")])
         _ = await engine(browser, activity: activity).signIn(SignInRequest(address: adminURL, agent: "claude-code"))
         let entry = try XCTUnwrap(activity.recent().first)
-        XCTAssertEqual(entry.status, .signedIn)
+        XCTAssertEqual(entry.status, .filled)
         XCTAssertEqual(entry.agent, "claude-code")
         XCTAssertEqual(entry.account, "Prod admin")
         let json = String(decoding: try JSONEncoder().encode(entry), as: UTF8.self)
@@ -594,10 +587,10 @@ final class UnaddedSiteTests: XCTestCase {
         var logins: [String] = ["me@example.com"]
         var error: PasswordSourceError? = nil
         var asked = Box<[String]>([])
-        func loginNames(site: String) async throws -> [String] {
+        func savedLogins(site: String) async throws -> SavedLogins {
             asked.value.append(site)
             if let error { throw error }
-            return logins
+            return SavedLogins(names: logins)
         }
         func credential(for account: Account, host: String) async throws -> Credential {
             if case let .applePasswords(site) = account.credential, site == "shop.example.org" {
@@ -611,7 +604,7 @@ final class UnaddedSiteTests: XCTestCase {
     private let url = "https://shop.example.org/login"
 
     private func page(_ address: String, form: Bool = true) -> PageState {
-        PageState(url: address, username: form, password: form, loginHints: form)
+        PageState(url: address, username: form, password: form)
     }
 
     private func engine(_ browser: FakeBrowser, passwords: Passwords = Passwords(), approver: FakeApprover = FakeApprover(), settings: DoormanSettings = DoormanSettings()) -> SignInEngine {
@@ -623,7 +616,7 @@ final class UnaddedSiteTests: XCTestCase {
         let approver = FakeApprover()
         let passwords = Passwords()
         let result = await engine(browser, passwords: passwords, approver: approver).signIn(SignInRequest(address: url))
-        XCTAssertEqual(result.status, .signedIn)
+        XCTAssertEqual(result.status, .filled)
         XCTAssertEqual(browser.filledPasswords, ["saved-password"])
         XCTAssertEqual(passwords.asked.value, ["shop.example.org"])
         XCTAssertEqual(approver.log.value.count, 1, "it asked first")
@@ -702,7 +695,7 @@ final class UnaddedSiteTests: XCTestCase {
 
     func testAgentsCantProbeHundredsOfSites() async {
         let e = SignInEngine(settings: { .usable(DoormanSettings()) }, approver: FakeApprover(decision: .denied), passwords: Passwords(logins: []), mail: FakeMail(),
-                             adapters: { [FakeBrowser(url: "https://a.example.org/login", pages: [PageState(url: "https://a.example.org/login", username: true, password: true, loginHints: true)])] },
+                             adapters: { [FakeBrowser(url: "https://a.example.org/login", pages: [PageState(url: "https://a.example.org/login", username: true, password: true)])] },
                              activity: ActivityLog(), timing: fastTiming())
         var last = SignInResult(status: .failed)
         for _ in 0..<11 { last = await e.signIn(SignInRequest(address: "https://a.example.org/login")) }
@@ -715,16 +708,20 @@ final class UnaddedSiteTests: XCTestCase {
         XCTAssertEqual(result.reason, Reason.appleNotPaired)
     }
 
-    func testAnAddedAppIsUsedInsteadOfALookup() async {
+    func testAnAddedAppUsesItsOwnAccountNotWhatALookupFinds() async {
         let role = Role(name: "User", path: "/", signIn: .password)
         let added = DoormanSettings(apps: [AppProfile(name: "Shop", host: "shop.example.org", roles: [role], accounts: [
             Account(name: "Me", roleID: role.id, login: "me@example.com", credential: .applePasswords(site: "shop.example.org")),
         ])])
         let browser = FakeBrowser(url: url, pages: [page(url), page("https://shop.example.org/home", form: false)])
-        let passwords = Passwords()
-        let result = await engine(browser, passwords: passwords, settings: added).signIn(SignInRequest(address: url))
+        // Apple is only asked whether it will want Touch ID. Its answer doesn't choose the login.
+        let passwords = Passwords(logins: ["someone-else@example.com"])
+        let approver = FakeApprover()
+        let result = await engine(browser, passwords: passwords, approver: approver, settings: added).signIn(SignInRequest(address: url))
         XCTAssertEqual(result.app, "Shop")
-        XCTAssertEqual(passwords.asked.value, [])
+        XCTAssertEqual(result.account, "Me")
+        XCTAssertEqual(approver.log.value[0].accounts.map(\.login), ["me@example.com"])
+        XCTAssertEqual(browser.fills, ["login:me@example.com:pw"])
     }
 }
 

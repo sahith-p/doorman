@@ -120,6 +120,9 @@ private actor FakeHelper {
     var deliver: (@Sendable (Data) async -> Void)?
     var passwordRequests: [[String: Any]] = []
     var knowsSession = true
+    /// The real helper stays silent about a session it doesn't know.
+    var silentAboutUnknownSessions = false
+    var requiresTouchID = false
 
     init(pin: String, useBase64: Bool, entries: [[String: Any]]) {
         self.pin = pin
@@ -129,6 +132,12 @@ private actor FakeHelper {
 
     func connect(_ deliver: @escaping @Sendable (Data) async -> Void) { self.deliver = deliver }
     func forgetSession() { knowsSession = false }
+    func restart() {
+        knowsSession = false
+        silentAboutUnknownSessions = true
+    }
+    func setEntries(_ new: [[String: Any]]) { entries = new }
+    func setRequiresTouchID(_ value: Bool) { requiresTouchID = value }
 
     private var codec: SRPClient { SRPClient(useBase64: useBase64, I: [1], a: BigUInt(1)) }
 
@@ -185,7 +194,7 @@ private actor FakeHelper {
 
     private func encrypted(_ cmd: Int, _ message: [String: Any]) async {
         guard knowsSession else {
-            await send(["cmd": cmd, "STATUS": 9])
+            if !silentAboutUnknownSessions { await send(["cmd": cmd, "STATUS": 9]) }
             return
         }
         let payload = try! JSONSerialization.jsonObject(with: Data((message["payload"] as! String).utf8)) as! [String: Any]
@@ -194,7 +203,7 @@ private actor FakeHelper {
         let plain = try! session.open(iv16Tail: smsg["SDATA"] as! String)
         let body = try! JSONSerialization.jsonObject(with: plain) as! [String: Any]
         passwordRequests.append(body)
-        var reply: [String: Any] = ["STATUS": 0]
+        var reply: [String: Any] = ["STATUS": 0, "RequiresUserAuthenticationToFill": requiresTouchID]
         if cmd == AppleCommand.getCode {
             reply["Entries"] = [["username": "me@example.com", "code": "424242", "source": "totp"]]
         } else {
@@ -357,5 +366,95 @@ final class AppleClientTests: XCTestCase {
         }
         let seen = await helper.passwordRequests
         XCTAssertTrue(seen.isEmpty)
+    }
+}
+
+extension AppleClientTests {
+    private func pair(_ client: AppleClient) async throws {
+        try await client.hello()
+        try await client.beginPairing()
+        try await client.finishPairing(pin: "123456")
+    }
+
+    func testASavedPairingANewHelperIgnoresNeedsPairingAgain() async throws {
+        let store = InMemoryAppleSessionStore()
+        let helper = FakeHelper(pin: "123456", useBase64: false, entries: entries)
+        let first = AppleClient(transport: FakeTransport(helper: helper), store: store)
+        await helper.connect { [first] data in await first.deliver(data) }
+        try await pair(first)
+        XCTAssertNotNil(store.load())
+
+        await helper.restart()
+        let second = AppleClient(transport: FakeTransport(helper: helper), store: store, sessionCheckTimeout: 0.05)
+        await helper.connect { [second] data in await second.deliver(data) }
+        let state = try await second.hello()
+        XCTAssertEqual(state, .needsPairing, "not paired just because a key was saved")
+        XCTAssertNil(store.load(), "a key the helper ignores is no use to keep")
+        do {
+            _ = try await second.credential(site: "example.com", username: "me@example.com")
+            XCTFail("expected notPaired")
+        } catch {
+            XCTAssertEqual(error as? AppleProtocolError, .notPaired)
+        }
+    }
+
+    func testAHelperThatGoesAwayMeansCheckingAgain() async throws {
+        let store = InMemoryAppleSessionStore()
+        let helper = FakeHelper(pin: "123456", useBase64: false, entries: entries)
+        let client = AppleClient(transport: FakeTransport(helper: helper), store: store, sessionCheckTimeout: 0.05)
+        await helper.connect { [client] data in await client.deliver(data) }
+        try await pair(client)
+        await client.transportClosed()
+        await helper.restart()
+        let state = try await client.hello()
+        XCTAssertEqual(state, .needsPairing)
+    }
+
+    func testAPairingThisHelperKnowsIsOnlyCheckedOnce() async throws {
+        let (client, helper) = await connect()
+        try await pair(client)
+        let before = await helper.passwordRequests.count
+        let again = try await client.hello()
+        XCTAssertEqual(again, .paired)
+        let after = await helper.passwordRequests.count
+        XCTAssertEqual(after, before, "a hello on a known session sends nothing extra")
+    }
+
+    func testAHelloWhileTypingTheCodeKeepsTheCodeBox() async throws {
+        let (client, _) = await connect()
+        try await client.hello()
+        try await client.beginPairing()
+        let state = try await client.hello()
+        XCTAssertEqual(state, .waitingForPIN)
+        try await client.finishPairing(pin: "123456")
+        let finished = await client.state
+        XCTAssertEqual(finished, .paired)
+    }
+
+    func testTheLookupSaysWhetherAppleWillAskForTouchID() async throws {
+        let (client, helper) = await connect()
+        try await pair(client)
+        let without = try await client.lookup(site: "example.com")
+        XCTAssertFalse(without.requiresTouchID)
+        await helper.setRequiresTouchID(true)
+        let with = try await client.lookup(site: "example.com")
+        XCTAssertTrue(with.requiresTouchID)
+    }
+
+    func testAnAnswerThatDoesntNameTheSiteIsNotUsed() async throws {
+        let (client, helper) = await connect()
+        try await pair(client)
+        await helper.setEntries([["USR": "me@example.com", "PWD": "bank-password"]])
+        let answer = try await client.credential(site: "example.com", username: "me@example.com")
+        XCTAssertNil(answer, "a late reply about another site looks exactly like this")
+    }
+
+    func testAnotherLoginsCodeIsNotUsed() async throws {
+        let (client, _) = await connect()
+        try await pair(client)
+        let mine = try await client.authenticatorCode(url: "https://example.com/", username: "me@example.com")
+        XCTAssertEqual(mine?.reveal(), "424242")
+        let other = try await client.authenticatorCode(url: "https://example.com/", username: "other@example.com")
+        XCTAssertNil(other)
     }
 }
