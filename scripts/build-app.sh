@@ -7,10 +7,10 @@ cd "$(dirname "$0")/.."
 
 ARCHS=()
 if [ "${UNIVERSAL:-}" = "1" ]; then ARCHS=(--arch arm64 --arch x86_64); fi
-swift build -c release "${ARCHS[@]}" --product Doorman
-swift build -c release "${ARCHS[@]}" --product doorman-mcp
-swift build -c release "${ARCHS[@]}" --product doorman-host
-BIN="$(swift build -c release "${ARCHS[@]}" --show-bin-path)"
+swift build -c release ${ARCHS[@]+"${ARCHS[@]}"} --product Doorman
+swift build -c release ${ARCHS[@]+"${ARCHS[@]}"} --product doorman-mcp
+swift build -c release ${ARCHS[@]+"${ARCHS[@]}"} --product doorman-host
+BIN="$(swift build -c release ${ARCHS[@]+"${ARCHS[@]}"} --show-bin-path)"
 
 APP=build/Doorman.app
 rm -rf "$APP"

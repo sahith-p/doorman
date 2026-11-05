@@ -109,28 +109,6 @@ func renderAll() {
     render("settings-empty", SettingsRoot().environmentObject(empty), size: CGSize(width: 900, height: 500))
 }
 
-/// `doorman-snapshots --icon <file.png>`: draws the app icon.
-@MainActor
-func renderIcon(to path: String) {
-    let view = ZStack {
-        RoundedRectangle(cornerRadius: 225, style: .continuous).fill(Color(red: 0.16, green: 0.33, blue: 0.86))
-        Image(systemName: "key.fill")
-            .font(.system(size: 520, weight: .semibold))
-            .foregroundStyle(.white)
-            .rotationEffect(.degrees(-45))
-    }
-    .frame(width: 1024, height: 1024)
-    let renderer = ImageRenderer(content: view)
-    renderer.isOpaque = false
-    guard let image = renderer.nsImage, let tiff = image.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff),
-          let png = rep.representation(using: .png, properties: [:]) else { return }
-    try? png.write(to: URL(fileURLWithPath: path))
-}
-
 MainActor.assumeIsolated {
-    if let i = CommandLine.arguments.firstIndex(of: "--icon"), i + 1 < CommandLine.arguments.count {
-        renderIcon(to: CommandLine.arguments[i + 1])
-    } else {
-        renderAll()
-    }
+    renderAll()
 }

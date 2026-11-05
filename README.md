@@ -1,6 +1,17 @@
-# Doorman
+<h1 align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/brand/logo-dark.svg">
+    <img src="assets/brand/logo-light.svg" width="340" alt="Doorman">
+  </picture>
+</h1>
 
-**Lets AI agents sign in to websites without ever seeing your password.**
+<p align="center"><strong>Lets AI agents sign in to websites without ever seeing your password.</strong></p>
+
+<p align="center">
+  <img alt="macOS 14 or later" src="https://img.shields.io/badge/macOS-14%2B-2149CC">
+  <img alt="Works with MCP agents" src="https://img.shields.io/badge/works_with-MCP_agents-2149CC">
+  <img alt="Early version" src="https://img.shields.io/badge/status-early_version-E67E22">
+</p>
 
 An agent asks Doorman to sign in. You approve with Touch ID. Doorman gets the password from Apple Passwords, fills the page, handles an emailed code or sign-in link if the site asks for one, and tells the agent `signed_in`. The agent never sees the password or the code.
 
